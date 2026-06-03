@@ -1,0 +1,60 @@
+server:
+  port: 8081
+  shutdown: graceful
+
+spring:
+  application:
+    name: order-service
+
+  # ── Postgres (write side: Eventuate event store + idempotency) ──────────
+  datasource:
+    url: jdbc:postgresql://localhost:5432/vab
+    username: eventuate
+    password: eventuate
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: orders
+
+  flyway:
+    enabled: true
+    schemas: orders
+    locations:             #flyway auto adds locations.
+    - classpath:db/migration
+#    - classpath:flyway/postgresql
+
+  # ── MongoDB (read side: projections) ───────────────────────────────────
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/vab
+
+# ── Eventuate Local — event store ─────────────────────────────────────────
+eventuate:
+  database:
+    schema: eventuate
+
+# ── Eventuate Tram / Kafka ─────────────────────────────────────────────────
+eventuatelocal:
+  kafka:
+    bootstrap:
+      servers: localhost:9094
+  # zookeeper.connection.string intentionally omitted — KRaft mode, not needed
+
+# ── Actuator ───────────────────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.vab: DEBUG
+    io.eventuate: INFO

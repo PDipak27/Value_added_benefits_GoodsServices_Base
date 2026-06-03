@@ -1,0 +1,49 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.vab</groupId>
+        <artifactId>va-bags</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>shared-events</artifactId>
+    <name>VA-BAGS :: Shared Events</name>
+
+    <dependencies>
+        <!-- io.eventuate.Event — required for ES aggregate events (OrderPlaced/Confirmed/Failed) -->
+		<dependency>
+			<groupId>io.eventuate.local.java</groupId>
+			<artifactId>eventuate-client-java</artifactId>
+		</dependency>
+
+        <!-- io.eventuate.tram.events.common.DomainEvent (for non-ES domain events, if needed) -->
+		<dependency>
+			<groupId>io.eventuate.tram.core</groupId>
+			<artifactId>eventuate-tram-events</artifactId>
+		</dependency>
+
+		<!-- io.eventuate.tram.commands.common.Command (already likely there) -->
+		<dependency>
+			<groupId>io.eventuate.tram.core</groupId>
+			<artifactId>eventuate-tram-commands</artifactId>
+		</dependency>
+		<!-- Jackson for JSON serialization of event payloads -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+    </dependencies>
+
+    <repositories>
+		<!-- Eventuate releases and snapshots -->
+        <repository>
+            <id>eventuate-snapshots</id>
+            <url>https://snapshots.repositories.eventuate.io/repository</url>
+            <releases><enabled>true</enabled></releases>
+            <snapshots><enabled>true</enabled></snapshots>
+        </repository>
+    </repositories>
+</project>

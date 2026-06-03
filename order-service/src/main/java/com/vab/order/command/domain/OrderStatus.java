@@ -1,0 +1,14 @@
+package com.vab.order.command.domain;
+
+public enum OrderStatus {
+    PLACED,
+    RESERVING_INVENTORY,
+    INVENTORY_RESERVED,
+    AUTHORIZING_BILLING,
+    BILLING_AUTHORIZED,
+    PROVISIONING,
+    CONFIRMED,
+    FAILED,
+    COMPENSATING,
+    COMPENSATION_COMPLETED
+}

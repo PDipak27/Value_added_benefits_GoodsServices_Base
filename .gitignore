@@ -1,0 +1,41 @@
+# ── Maven ─────────────────────────────────────────────
+target/
+*.jar
+*.war
+*.ear
+*.class
+dependency-reduced-pom.xml
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# ── Spring Boot ───────────────────────────────────────
+*.log
+*.log.*
+logs/
+
+# ── Eclipse ───────────────────────────────────────────
+.project
+.classpath
+.settings/
+.factorypath
+bin/
+
+# ── IntelliJ IDEA ─────────────────────────────────────
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# ── VS Code ───────────────────────────────────────────
+.vscode/
+
+# ── OS / misc ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# ── Local env / secrets ───────────────────────────────
+.env
+*.local

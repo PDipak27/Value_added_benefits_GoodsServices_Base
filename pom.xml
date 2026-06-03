@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.vab</groupId>
+    <artifactId>va-bags</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>VA-BAGS :: Parent</name>
+
+    <modules>
+        <module>shared-events</module>
+        <module>api-gateway</module>
+        <module>catalog-service</module>
+        <module>order-service</module>
+        <module>inventory-service</module>
+        <module>billing-stub-service</module>
+        <module>notification-service</module>
+    </modules>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <spring-boot.version>3.4.0</spring-boot.version>
+        <eventuate-platform.version>2026.0.RELEASE</eventuate-platform.version>
+
+        <!-- Override Spring Boot BOM's Flyway 10.20.x → 11.x for Postgres 18 support.
+             Spring Boot's dependency-management resolves flyway-core, flyway-database-postgresql,
+             etc. against this property. -->
+        <flyway.version>11.8.2</flyway.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Spring Boot BOM -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- Eventuate Platform BOM — manages ALL eventuate artifact versions -->
+            <dependency>
+                <groupId>io.eventuate.platform</groupId>
+                <artifactId>eventuate-platform-dependencies</artifactId>
+                <version>${eventuate-platform.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- Override Spring Boot BOM's Flyway 10.20.x → 11.x for Postgres 18 support.
+                 Property override doesn't cross BOM-import boundary, so pin explicitly here. -->
+            <dependency>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-core</artifactId>
+                <version>${flyway.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-database-postgresql</artifactId>
+                <version>${flyway.version}</version>
+            </dependency>
+
+			<!-- Internal modules -->
+            <dependency>
+                <groupId>com.vab</groupId>
+                <artifactId>shared-events</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- Universal test deps -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                    <configuration>
+                        <source>17</source>
+                        <target>17</target>
+                        <compilerArgs>
+                            <!-- Required by Eventuate Tram Sagas parameter name discovery -->
+                            <arg>-parameters</arg>
+                        </compilerArgs>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+
+    <repositories>
+        <!-- Eventuate releases and snapshots -->
+        <repository>
+            <id>eventuate-snapshots</id>
+            <url>https://snapshots.repositories.eventuate.io/repository</url>
+            <releases><enabled>true</enabled></releases>
+            <snapshots><enabled>true</enabled></snapshots>
+        </repository>
+    </repositories>
+</project>

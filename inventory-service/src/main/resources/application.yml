@@ -1,0 +1,43 @@
+server:
+  port: 8082
+  shutdown: graceful
+
+spring:
+  application:
+    name: inventory-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/vab
+    username: eventuate
+    password: eventuate
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: inventory
+
+  flyway:
+    enabled: true
+    schemas: inventory
+    locations: #flyway auto adds locations.
+    - classpath:db/migration
+#    - classpath:flyway/postgresql
+
+eventuatelocal:
+  kafka:
+    bootstrap:
+      servers: localhost:9094
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    com.vab: DEBUG
+    io.eventuate: INFO
