@@ -6,32 +6,46 @@ an order that is fulfilled across several services. It is a portfolio-grade
 reconstruction of a real telecom VAS platform, built to demonstrate three
 patterns working together end-to-end:
 
-- **CQRS** — the Order service separates the write side (event-sourced aggregate)
-  from the read side (MongoDB projections served by a dedicated query API).
+- **CQRS** — the Order service separates the write side (state-stored aggregate +
+  outbox) from the read side (MongoDB projections served by a dedicated query
+  API), with a read-your-writes fallback so reads stay correct during projection lag.
 - **Saga orchestration** — placing an order runs a multi-step distributed
   transaction (reserve inventory → confirm order) with LIFO compensation on
   failure, coordinated by one orchestrator.
-- **Event Sourcing** — the Order aggregate's state is derived from an append-only
-  event log, not an updatable row.
+- **Transactional outbox + event log** — the Order aggregate is stored as ordinary
+  state; domain events are written to a Postgres outbox in the same transaction and
+  relayed to Kafka, which serves as the durable, replayable event log (analytics,
+  recsys). *Note: the design deliberately does **not** event-source the aggregate —
+  see [`Design/08-design-decisions.md`](Design/08-design-decisions.md) DD-14.*
+
+> **Scale envelope:** ~50 order TPS, ~300 read RPS — a single-node Postgres
+> workload. The patterns above are chosen for *capability*, not throughput.
 
 ## Architecture at a glance
 
 ```
 client ──HTTP──▶ API Gateway ──▶ Order Service ──saga commands──▶ Inventory Service
-                                   │  (CQRS + ES)                   Billing Stub
+                                   │  (CQRS + Saga)                 Billing Stub
                                    │                                Notification
                                    ▼
-                       Postgres (event store, saga, idempotency)
+                  Postgres (order state + outbox + saga + idempotency)
                                    │
                           Eventuate CDC (polling)
                                    │
                                  Kafka ──▶ Order projector ──▶ MongoDB (read model)
+                              (event log)        │
+                                   └─ GET falls back to Postgres on projection miss
 ```
 
 Writes never touch Kafka directly. Domain events and saga messages are written
-transactionally to Postgres outbox tables; **Eventuate CDC** polls those tables
-and publishes to **Kafka**, giving an atomic "write + publish" guarantee. The
-Order projector consumes from Kafka and materializes the read model in MongoDB.
+transactionally to a Postgres outbox table; **Eventuate CDC** polls it and
+publishes to **Kafka**, giving an atomic "write + publish" guarantee. The Order
+projector consumes from Kafka and materializes the read model in MongoDB.
+
+> **Migration status:** the design (and these docs) reflect the post-Event-Sourcing
+> target. The code is mid-migration from Eventuate Local ES to state-stored +
+> Tram outbox; `docker-compose.yml` still provisions the legacy CDC `localpipeline`
+> until that lands.
 
 ## Services
 
@@ -39,7 +53,7 @@ Order projector consumes from Kafka and materializes the read model in MongoDB.
 |---|---|
 | **api-gateway** | TLS, JWT validation, routing, OIDC provider endpoints. Owns no domain data. |
 | **catalog-service** | Offer definitions, price snapshots, eligibility rules. |
-| **order-service** *(depth service)* | Order aggregate (ES), `PlaceOrderSaga` orchestration, MongoDB projections, idempotency, read API. Single deployable, three internal packages (`command` / `saga` / `query`). |
+| **order-service** *(depth service)* | State-stored Order aggregate + outbox, `PlaceOrderSaga` orchestration, MongoDB projections, idempotency, read API. Single deployable, three internal packages (`command` / `saga` / `query`). |
 | **inventory-service** | Saga participant. Reserves/commits/releases three inventory types: `PHYSICAL`, `SLOT`, `LICENSE`. |
 | **billing-stub-service** | Saga participant. Simulated `Authorize`/`Capture`/`Refund` over a real network boundary. |
 | **notification-service** | Pure event-driven consumer (`OrderConfirmed`, `OrderFailed`, …). No inbound commands. |
@@ -52,11 +66,11 @@ Order projector consumes from Kafka and materializes the read model in MongoDB.
 | Language / runtime | Java 17 |
 | Framework | Spring Boot 3.4.0 |
 | Build | Maven (multi-module) |
-| Event sourcing | Eventuate Local ES |
+| Order write model | State-stored JPA aggregate + Eventuate Tram transactional outbox |
 | Saga orchestration | Eventuate Tram Sagas |
-| Messaging | Apache Kafka (KRaft — no ZooKeeper quorum) |
-| Write store | PostgreSQL 18 (event store + saga + idempotency) |
-| Read store | MongoDB 7 (projections) |
+| Messaging / event log | Apache Kafka (KRaft — no ZooKeeper quorum) |
+| Write store | PostgreSQL 18 (order state + outbox + saga + idempotency) |
+| Read store | MongoDB 7 (projections; optional, with read-your-writes fallback) |
 | Change data capture | Eventuate CDC (Polling mode) |
 | Schema registry (dev) | Apicurio (in-memory) |
 
@@ -71,7 +85,7 @@ vabags_base/
 ├── shared-events/          # shared event/command contracts
 ├── api-gateway/
 ├── catalog-service/
-├── order-service/          # CQRS + Saga + ES (the depth service)
+├── order-service/          # CQRS + Saga + outbox (the depth service)
 ├── inventory-service/
 ├── billing-stub-service/
 ├── notification-service/
@@ -118,15 +132,16 @@ curl -s http://localhost:8081/v1/orders/<orderId>   # → status: CONFIRMED
 
 ## Design documents
 
-Detailed design lives outside this module, in `../../Design/`:
+Full design lives in [`Design/`](Design/):
 
-| # | Topic |
-|---|---|
-| 01 | System context, service map, sync/async edges |
-| 02 | Per-service bounded contexts |
-| 03 | Order service deep dive — CQRS, event catalog, projections, idempotency |
-| 04 | Saga state machine, step table, failure modes |
-| 05 | API contracts |
-| 06 | OTT OIDC auth & provisioning |
-| 07 | Infra & stack, docker-compose services, repo layout |
-| 08 | Design decisions (ADR-style) |
+| # | File | Topic |
+|---|------|-------|
+| 01 | [01-system-context.md](Design/01-system-context.md) | System context, service map, sync/async edges |
+| 02 | [02-service-responsibilities.md](Design/02-service-responsibilities.md) | Per-service bounded contexts |
+| 03 | [03-order-service-deep-dive.md](Design/03-order-service-deep-dive.md) | Order service deep dive — CQRS, event catalog, projections, idempotency |
+| 04 | [04-saga-design.md](Design/04-saga-design.md) | Saga state machine, step table, failure modes |
+| 05 | [05-api-contracts.md](Design/05-api-contracts.md) | API contracts |
+| 06 | [06-ott-auth.md](Design/06-ott-auth.md) | OTT OIDC auth & provisioning |
+| 07 | [07-infra-and-stack.md](Design/07-infra-and-stack.md) | Infra & stack, docker-compose services, repo layout |
+| 08 | [08-design-decisions.md](Design/08-design-decisions.md) | Design decisions (ADR-style) |
+| — | [diagrams.mmd](Design/diagrams.mmd) | All Mermaid diagrams (paste into mermaid.live) |

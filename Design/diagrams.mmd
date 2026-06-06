@@ -1,0 +1,159 @@
+%% ============================================================
+%% 1. SYSTEM CONTEXT   (copy from here to the next %% banner)
+%% ============================================================
+flowchart LR
+    User(["Subscriber\nmobile/web"])
+    Ops(["Ops / Back-office"])
+
+    subgraph VAB["VA-BAGS"]
+        GW["API Gateway / BFF"]
+        CAT["Catalog & Eligibility"]
+        ORD["Order Service\nCQRS + Saga"]
+        INV["Inventory Service"]
+        BIL["Billing Stub"]
+        NOT["Notification Service"]
+    end
+
+    subgraph EXT["Third-party (separate codebase)"]
+        OTT["OTT Platform\nSpring Boot"]
+    end
+
+    BROKER[("Kafka\nevent log")]
+    WSTORE[("PostgreSQL\norder state + outbox")]
+    RSTORE[("MongoDB\nread projections")]
+
+    User -->|"HTTPS REST"| GW
+    Ops  -->|"HTTPS REST"| GW
+
+    GW -->|"sync REST"| CAT
+    GW -->|"cmd sync / status sync"| ORD
+    GW -.->|"OIDC OP endpoints"| OTT
+
+    ORD --> WSTORE
+    ORD <-->|"events + commands"| BROKER
+    INV <-->|"events + commands"| BROKER
+    BIL <-->|"events + commands"| BROKER
+    NOT <---|"domain events"| BROKER
+    CAT <---|"domain events"| BROKER
+
+    BROKER -->|"projector consumer"| RSTORE
+    ORD -->|"Query API: primary"| RSTORE
+    ORD -.->|"read-your-writes fallback"| WSTORE
+
+
+%% ============================================================
+%% 2. ORDER SERVICE — INTERNAL ARCHITECTURE
+%% ============================================================
+flowchart TB
+    subgraph ORD["Order Service — single deployable"]
+        CMD["Command API\nPOST /v1/orders\nPOST /v1/orders/{id}:cancel"]
+        IDEM["Idempotency Filter\nidempotency_keys table"]
+        AGG["Order\nstate-stored JPA aggregate"]
+        SAGA["PlaceOrderSaga\nEventuate Tram Sagas"]
+        PG[("PostgreSQL\norders · saga · outbox")]
+        CDC["Eventuate CDC\npolls Tram outbox → Kafka"]
+        PROJ["OrderProjector\nTram domain-event handler"]
+        MONG[("MongoDB\norders_v1\nentitlements_v1\norder_search_v1")]
+        QRY["Query API\nGET /v1/orders/*\nGET /v1/entitlements"]
+    end
+
+    KAFKA[("Kafka event log")]
+
+    CMD --> IDEM --> AGG
+    AGG -->|"order state + domain events\nin one transaction"| PG
+    PG --> CDC --> KAFKA
+    KAFKA --> SAGA
+    SAGA --> KAFKA
+    SAGA -->|"invokeLocal: confirm / fail"| AGG
+    KAFKA --> PROJ --> MONG
+    QRY -->|"primary path"| MONG
+    QRY -.->|"read-your-writes fallback\nlookup by orderId"| PG
+
+
+%% ============================================================
+%% 3. ORDER PLACEMENT — END-TO-END SEQUENCE
+%% ============================================================
+sequenceDiagram
+    actor C as Client
+    participant API as Command API
+    participant DB as PostgreSQL (orders + outbox)
+    participant CDC as Eventuate CDC
+    participant K as Kafka
+    participant SG as PlaceOrderSaga
+    participant INV as Inventory / Billing / OTT
+    participant PR as OrderProjector
+    participant M as MongoDB
+
+    C->>API: POST /v1/orders (Idempotency-Key)
+    API->>DB: insert Order (PLACED) + OrderPlaced event — one tx
+    API-->>C: 202 Accepted {orderId}
+    Note over C,M: GET before projection lands → served from DB (read-your-writes)
+    CDC->>DB: poll outbox (published = 0)
+    CDC->>K: publish OrderPlaced + saga commands
+    K->>SG: drive saga
+    SG->>INV: Reserve / Authorize / Provision
+    INV-->>SG: replies
+    SG->>DB: confirmOrder → status CONFIRMED + OrderConfirmed event (one tx)
+    K->>PR: OrderPlaced / OrderConfirmed
+    PR->>M: upsert orders_v1 / entitlements_v1
+
+
+%% ============================================================
+%% 4. PLACEORDERSAGA — STATE MACHINE
+%% ============================================================
+stateDiagram-v2
+    [*] --> Placed
+    Placed --> ReservingInventory : Saga starts
+    ReservingInventory --> Reserved : InventoryReserved
+    ReservingInventory --> FailingNoCompensation : InventoryReservationFailed
+    Reserved --> AuthorizingBilling : next step
+    AuthorizingBilling --> Authorized : BillingAuthorized
+    AuthorizingBilling --> CompensatingInventory : BillingDeclined
+    Authorized --> Provisioning : next step
+    Provisioning --> Confirmed : EntitlementProvisioned
+    Provisioning --> CompensatingBilling : EntitlementProvisioningFailed (non-retryable)
+    CompensatingBilling --> CompensatingInventory : BillingRefunded
+    CompensatingInventory --> Failed : InventoryReleased
+    FailingNoCompensation --> Failed : terminal
+    Confirmed --> [*]
+    Failed --> [*]
+
+
+%% ============================================================
+%% 5. OIDC LOGIN FLOW  (subscriber → OTT)
+%% ============================================================
+sequenceDiagram
+    participant U as Subscriber
+    participant OTT as OTT Platform (RP)
+    participant GW as Gateway (OP)
+
+    U->>OTT: open OTT app
+    OTT->>U: redirect to /oidc/authorize?client_id=ott&code_challenge=...&scope=openid profile
+    U->>GW: GET /oidc/authorize (with PKCE code challenge)
+    GW->>U: login screen (subscriber credentials)
+    U->>GW: submit credentials
+    GW-->>U: redirect to OTT callback with authorization code
+    U->>OTT: deliver code
+    OTT->>GW: POST /oidc/token (code + code_verifier)
+    GW-->>OTT: id_token + access_token
+    OTT->>GW: GET /oidc/userinfo (with access_token)
+    GW-->>OTT: { sub, msisdn, name }
+    OTT->>OTT: lookup entitlement by subscriberId
+    OTT-->>U: grant access / stream
+
+
+%% ============================================================
+%% 6. ENTITLEMENT PROVISIONING  (Order Saga → OTT)
+%% ============================================================
+sequenceDiagram
+    participant SM as Order Saga
+    participant OTT as OTT Admin API
+    participant TS as Token Server (Gateway)
+
+    Note over SM: Saga step 3 — provision
+    SM->>TS: POST /oidc/token (client_credentials, scope=ott:provision)
+    TS-->>SM: access_token (short-lived, 5 min)
+    SM->>OTT: POST /admin/entitlements (Bearer token) {subscriberId, offerCode, validFrom, validUntil, sagaId}
+    OTT->>OTT: upsert entitlement (idempotent on sagaId)
+    OTT-->>SM: 201 Created {externalRef}
+    Note over SM: append EntitlementProvisioned → OrderConfirmed
