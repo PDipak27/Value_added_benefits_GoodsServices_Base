@@ -117,8 +117,7 @@ cd inventory-service && mvn spring-boot:run
 Place an order and check its status:
 
 ```bash
-curl -s -X POST http://localhost:8081/v1/orders \
-  -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
+curl -s -X POST http://localhost:8081/v1/orders -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
   -d '{"subscriberId":"sub_test_001","offerCode":"OTT_NETFLIX_6M",
        "priceSnapshotId":"ps_test_001","amount":599,"currency":"INR",
        "billingMode":"BILL_TO_MOBILE"}'
