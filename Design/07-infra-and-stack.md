@@ -11,8 +11,8 @@
 | Outbox → broker | **Eventuate CDC in Polling mode** (`SPRING_PROFILES_ACTIVE=EventuatePolling,Kafka`) — a single `trampipeline` reader polling the Tram `eventuate.message` outbox. | One CDC service relays both the Order domain events and the Inventory/Billing saga command/reply traffic (all flow through the Tram outbox). With ES removed, the former `localpipeline` (Local ES `eventuate.events`) is retired — fewer moving parts. No wal2json, no logical replication slot — simpler dev on Windows + Postgres 18. Trade-off: slightly higher publish latency vs WAL tailing — irrelevant at ~50 TPS. |
 | Broker | **Apache Kafka** via `apache/kafka:3.7.1` in **KRaft mode** | Kafka itself needs no ZooKeeper (KRaft handles broker/controller quorum). Retained as the durable **event log** (replay, analytics, recsys) — a strategic asset, not a scaling device. |
 | CDC leader election | **ZooKeeper** (`confluentinc/cp-zookeeper:7.7.1`) on `:2181` | Eventuate CDC uses a ZK lock (`/eventuate/cdc/leader/tram`) to coordinate CDC replicas — required by the framework even with a single instance, and what makes a **multi-instance (HA) CDC** deployment safe. Independent of Kafka's KRaft quorum. |
-| Write store | **PostgreSQL 18** (locally installed, not containerised) | User preference; CDC connects via `host.docker.internal` |
-| Read store | **MongoDB 7** | Document model suits denormalized projections |
+| Write store | **PostgreSQL 18** (locally installed, not containerised) — Order write side only (order state + Tram outbox + saga + idempotency) | User preference; CDC connects via `host.docker.internal` |
+| Read / document store | **MongoDB 7** — Order read-model projections **and** the Catalog store (DD-16) | Document model suits denormalized order projections; also fits polymorphic, often-changing offer documents (Catalog is its own `vab_catalog` database) |
 | Schema registry | **Apicurio** (OSS, in-memory for dev) | Same REST API as Confluent SR; zero license cost |
 | OIDC Provider | Spring Authorization Server (iteration 6+) | Production-grade; not hand-rolled |
 | Observability | OTel → Loki + Grafana | Existing repo wiring |

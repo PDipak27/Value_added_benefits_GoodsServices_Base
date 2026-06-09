@@ -62,16 +62,27 @@ mvn clean install -DskipTests
 
 ---
 
-## 5. Run the walking skeleton (order + inventory)
+## 5. Run the services
 
-In separate terminals:
-```bash
-# Terminal 1
-cd order-service && mvn spring-boot:run
+Each service is an independent Spring Boot app. In separate terminals:
 
-# Terminal 2
-cd inventory-service && mvn spring-boot:run
-```
+| # | Command | Port | Needed for |
+|---|---------|------|-----------|
+| 1 | `cd order-service && mvn spring-boot:run` | 8081 | always — command + saga + query |
+| 2 | `cd inventory-service && mvn spring-boot:run` | 8082 | saga step 1 (reserve/commit/release) |
+| 3 | `cd billing-stub-service && mvn spring-boot:run` | 8083 | saga steps 2–3 (authorize/capture/refund) |
+| 4 | `cd notification-service && mvn spring-boot:run` | 8084 | reacts to `OrderConfirmed` / `OrderFailed` |
+| 5 | `cd catalog-service && mvn spring-boot:run` | 8085 | offer browse + eligibility (independent of the saga) |
+| 6 | `cd api-gateway && mvn spring-boot:run` | 8080 | single front door that routes to the above |
+
+**Minimal happy-path saga:** terminals 1–3 (order → inventory → billing).
+Add 4 to see notifications fire; 5 to browse the catalog; 6 to exercise routing.
+
+> The gateway (8080) routes `/v1/offers/**` → catalog (8085) and
+> `/v1/orders/**`, `/v1/entitlements/**` → order-service (8081). Inventory,
+> billing and notification are internal (saga participants / event consumers)
+> and are intentionally not routed. JWT validation and the OIDC provider
+> endpoints are deferred to a later iteration.
 
 ---
 
@@ -98,6 +109,49 @@ curl -s http://localhost:8081/v1/orders/<orderId>
 ```
 
 Replay the same request with the **same** `Idempotency-Key` → returns the **same** orderId, no new aggregate created.
+
+### Compensation path (billing decline)
+
+The billing stub declines any `amount > 999`. Place an order above the limit to
+exercise the saga's LIFO rollback (release inventory) and terminal failure:
+
+```bash
+curl -s -X POST http://localhost:8081/v1/orders \
+  -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"subscriberId":"sub_test_002","offerCode":"OTT_NETFLIX_6M",
+       "priceSnapshotId":"ps_test_001","amount":1500,"currency":"INR",
+       "billingMode":"BILL_TO_MOBILE"}'
+
+# billing-stub log → "Billing DECLINED ... exceeds limit 999"
+# order-service log → saga step 2 DECLINED → release inventory → order FAILED
+curl -s http://localhost:8081/v1/orders/<orderId>   # → status: FAILED
+```
+
+### Catalog & eligibility (catalog-service, :8085)
+
+```bash
+# Eligibility-filtered offer list for a subscriber profile (query params stand
+# in for JWT claims until the gateway/OIDC stack exists).
+curl -s "http://localhost:8085/v1/offers?planTier=PLUS&region=IN&kycLevel=MINIMAL"
+
+# Offer detail (404 if withdrawn, e.g. OTT_LEGACY_3M)
+curl -s http://localhost:8085/v1/offers/OTT_NETFLIX_6M
+
+# "Why can't I buy this?" — rule-level eligibility result
+curl -s -X POST http://localhost:8085/v1/offers/ACC_BUDS_PRO:evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"planTier":"BASIC","region":"IN","deviceAgeMonths":36,"kycLevel":"MINIMAL"}'
+# → eligible:false, failing rules: PLAN_TIER (needs PREMIUM), DEVICE_AGE, KYC
+```
+
+### Through the gateway (api-gateway, :8080)
+
+With the gateway running, the same calls work via the single front door:
+
+```bash
+curl -s "http://localhost:8080/v1/offers?planTier=PLUS&region=IN"   # → catalog (8085)
+curl -s  http://localhost:8080/v1/orders/<orderId>                   # → order-service (8081)
+```
 
 ---
 
@@ -141,10 +195,9 @@ EVENTUATE_CDC_CREATE_TOPICS: "false"
 
 Then pre-create required topics manually:
 ```bash
-docker exec vab-kafka kafka-topics.sh --bootstrap-server localhost:9092 \
-  --create --topic eventuate.entities --partitions 1 --replication-factor 1
-docker exec vab-kafka kafka-topics.sh --bootstrap-server localhost:9092 \
-  --create --topic inventoryService --partitions 1 --replication-factor 1
+docker exec vab-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic eventuate.entities --partitions 1 --replication-factor 1
+docker exec vab-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic inventoryService --partitions 1 --replication-factor 1
+docker exec vab-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic billingService --partitions 1 --replication-factor 1
 ```
 
 ### MongoDB auth error

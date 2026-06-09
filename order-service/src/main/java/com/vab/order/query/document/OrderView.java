@@ -27,7 +27,7 @@ public class OrderView {
     private String        status;
     private Instant       placedAt;
     private Instant       confirmedAt;
-    private String        version;  // last applied eventId (Int128 stringified, lexicographic order matches arrival)
+    private long          version;  // aggregate @Version of the last applied event (monotonic per order)
 
     private List<TimelineEntry> timeline = new ArrayList<>();
 
@@ -60,7 +60,7 @@ public class OrderView {
     public String            getStatus()       { return status; }
     public Instant           getPlacedAt()     { return placedAt; }
     public Instant           getConfirmedAt()  { return confirmedAt; }
-    public String            getVersion()      { return version; }
+    public long              getVersion()      { return version; }
     public List<TimelineEntry> getTimeline()   { return timeline; }
 
     public void setOrderId(String orderId)           { this.orderId = orderId; }
@@ -71,7 +71,7 @@ public class OrderView {
     public void setStatus(String status)             { this.status = status; }
     public void setPlacedAt(Instant placedAt)        { this.placedAt = placedAt; }
     public void setConfirmedAt(Instant confirmedAt)  { this.confirmedAt = confirmedAt; }
-    public void setVersion(String version)           { this.version = version; }
+    public void setVersion(long version)             { this.version = version; }
     public void setTimeline(List<TimelineEntry> t)   { this.timeline = t; }
 
     public void addTimelineEntry(Instant at, String status) {

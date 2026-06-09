@@ -235,3 +235,27 @@ The "polling is a bottleneck" critique is rejected at this volume: ~50 TPS is a 
 **Rationale:** At 300 RPS Postgres can serve point reads trivially, so the read store is an *optimization*, not a correctness dependency. The fallback gives **read-your-writes** for a freshly placed order and keeps `GET`-by-id **correct even when CDC/projector is down** — directly answering criticisms (1) and (2). The fallback is deliberately narrow: only lookup-by-`orderId`. List, search, and entitlement-uniqueness queries still require the projection, so the CQRS boundary (invariant 3) holds everywhere except the one bounded point read.
 
 **Related:** Catalog (read-heavy, weekly writes) is a strong fit for a **Redis cache invalidated by `OfferPublished`/`PriceChanged` events** — but Redis is *not* used for order read-your-writes (the Postgres fallback is simpler and avoids a dual-write). Order *history/analytics* is served from the Kafka-fed warehouse, and the hot order tables are **time-partitioned** rather than moved to a separate operational DB.
+
+---
+
+## DD-16 — Catalog persisted in MongoDB (document model), not Postgres
+
+**Problem:** The Catalog owns offer definitions, price snapshots, and eligibility rules across heterogeneous categories (DIGITAL / PHYSICAL / SLOT). The offer *shape* and its eligibility dimensions change often. Modelled relationally (the original `catalog.offers` table), this becomes a wide table of mostly-null columns — `max_device_age_months` only applies to PHYSICAL, etc. — and every new attribute or eligibility dimension is a DDL migration.
+
+**Options:**
+- A) Keep the relational `catalog.offers` table (JPA + Flyway on the shared Postgres).
+- B) **Store offers as MongoDB documents** in a dedicated `vab_catalog` database.
+- C) Keep relational but push variable attributes into a JSONB column (hybrid).
+
+**Choice:** **B**
+
+**Rationale:** The real driver is **shape change / polymorphism, not write throughput.** "Values change often" (prices, availability) is just write frequency, which Postgres handles fine at this volume and would *not* justify a switch on its own. What does justify it is that offers are polymorphic and their attribute/eligibility sets evolve continuously — a document model absorbs that without per-attribute migrations, and nested/arrayed eligibility rules read more naturally than flattened nullable columns. It is also a **net simplification**: Mongo is already in the stack for the order read model, so Catalog *drops* JPA + Flyway + the Postgres `catalog` schema rather than adding new tech. Postgres is now exclusively the Order write store.
+
+**Guardrails kept honest:**
+- **Price snapshots stay immutable and are referenced by id only.** Orders copy `priceSnapshotId` at placement, so losing the relational FK costs nothing — there is no live cross-store reference to maintain.
+- Catalog is its **own** Mongo database (`vab_catalog`), separate from the order read model (`vab` / `orders_v1`), preserving the bounded-context boundary.
+- Pairs with the Redis read-cache (DD-15) invalidated by `OfferPublished` / `PriceChanged`.
+
+**What this changes:**
+- **Removed:** `spring-boot-starter-data-jpa`, the Postgres driver, Flyway, and `V1__catalog_schema.sql` from `catalog-service`.
+- **Added:** `spring-boot-starter-data-mongodb`; `Offer` is a `@Document`; `OfferRepository` is a `MongoRepository`; seed data moves from the Flyway script to `CatalogSeeder` (seeds on startup when the collection is empty). Eligibility logic is unchanged.

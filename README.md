@@ -52,7 +52,7 @@ projector consumes from Kafka and materializes the read model in MongoDB.
 | Service | Role |
 |---|---|
 | **api-gateway** | TLS, JWT validation, routing, OIDC provider endpoints. Owns no domain data. |
-| **catalog-service** | Offer definitions, price snapshots, eligibility rules. |
+| **catalog-service** | Offer definitions, price snapshots, eligibility rules. Stored in MongoDB — polymorphic, often-changing offer documents (see Design DD-16). |
 | **order-service** *(depth service)* | State-stored Order aggregate + outbox, `PlaceOrderSaga` orchestration, MongoDB projections, idempotency, read API. Single deployable, three internal packages (`command` / `saga` / `query`). |
 | **inventory-service** | Saga participant. Reserves/commits/releases three inventory types: `PHYSICAL`, `SLOT`, `LICENSE`. |
 | **billing-stub-service** | Saga participant. Simulated `Authorize`/`Capture`/`Refund` over a real network boundary. |
@@ -69,8 +69,8 @@ projector consumes from Kafka and materializes the read model in MongoDB.
 | Order write model | State-stored JPA aggregate + Eventuate Tram transactional outbox |
 | Saga orchestration | Eventuate Tram Sagas |
 | Messaging / event log | Apache Kafka (KRaft — no ZooKeeper quorum) |
-| Write store | PostgreSQL 18 (order state + outbox + saga + idempotency) |
-| Read store | MongoDB 7 (projections; optional, with read-your-writes fallback) |
+| Write store | PostgreSQL 18 (order write side: order state + outbox + saga + idempotency) |
+| Document store | MongoDB 7 (order read-model projections + catalog store; order reads have a read-your-writes fallback) |
 | Change data capture | Eventuate CDC (Polling mode) |
 | Schema registry (dev) | Apicurio (in-memory) |
 
@@ -109,10 +109,19 @@ docker-compose up -d
 # 3. Build all modules
 mvn clean install -DskipTests
 
-# 4. Run the walking skeleton (separate terminals)
-cd order-service     && mvn spring-boot:run
-cd inventory-service && mvn spring-boot:run
+# 4. Run the services (separate terminals — see deploy/README.md for the full table)
+cd order-service         && mvn spring-boot:run   # :8081  command + saga + query
+cd inventory-service     && mvn spring-boot:run   # :8082  saga: reserve/commit/release
+cd billing-stub-service  && mvn spring-boot:run   # :8083  saga: authorize/capture/refund
+cd notification-service  && mvn spring-boot:run   # :8084  reacts to OrderConfirmed/Failed
+cd catalog-service       && mvn spring-boot:run   # :8085  offer browse + eligibility
+cd api-gateway           && mvn spring-boot:run   # :8080  routes to catalog + order
 ```
+
+> **Minimal happy-path saga** needs only order + inventory + billing (8081–8083).
+> The gateway (8080) is the single front door: `/v1/offers/**` → catalog,
+> `/v1/orders/**` and `/v1/entitlements/**` → order-service. JWT validation and
+> the OIDC provider endpoints are deferred to a later iteration.
 
 Place an order and check its status:
 

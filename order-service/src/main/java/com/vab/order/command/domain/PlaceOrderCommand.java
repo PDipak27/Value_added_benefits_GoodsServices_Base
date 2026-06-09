@@ -1,6 +1,13 @@
 package com.vab.order.command.domain;
 
-public class PlaceOrderCommand implements OrderCommand {
+/**
+ * Place-order request, carried from the Command API to the command service.
+ *
+ * Post-DD-14 this is a plain DTO (no Eventuate {@code Command} interface): the
+ * state-stored aggregate is mutated directly, not driven through an ES command
+ * processor.
+ */
+public class PlaceOrderCommand {
     private String subscriberId;
     private String offerCode;
     private String priceSnapshotId;

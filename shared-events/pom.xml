@@ -13,13 +13,9 @@
     <name>VA-BAGS :: Shared Events</name>
 
     <dependencies>
-        <!-- io.eventuate.Event — required for ES aggregate events (OrderPlaced/Confirmed/Failed) -->
-		<dependency>
-			<groupId>io.eventuate.local.java</groupId>
-			<artifactId>eventuate-client-java</artifactId>
-		</dependency>
-
-        <!-- io.eventuate.tram.events.common.DomainEvent (for non-ES domain events, if needed) -->
+        <!-- io.eventuate.tram.events.common.DomainEvent — Order domain events
+             (OrderPlaced/Confirmed/Failed) published via the Tram outbox.
+             Post-DD-14: no Eventuate Local ES, so no io.eventuate.Event. -->
 		<dependency>
 			<groupId>io.eventuate.tram.core</groupId>
 			<artifactId>eventuate-tram-events</artifactId>

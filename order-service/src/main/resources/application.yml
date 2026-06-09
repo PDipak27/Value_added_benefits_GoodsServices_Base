@@ -6,7 +6,7 @@ spring:
   application:
     name: order-service
 
-  # ── Postgres (write side: Eventuate event store + idempotency) ──────────
+  # ── Postgres (write side: order state + Tram outbox + idempotency) ──────
   datasource:
     url: jdbc:postgresql://localhost:5432/vab
     username: eventuate
@@ -32,7 +32,7 @@ spring:
     mongodb:
       uri: mongodb://localhost:27017/vab
 
-# ── Eventuate Local — event store ─────────────────────────────────────────
+# ── Eventuate Tram — outbox + dedup tables live in the 'eventuate' schema ──
 eventuate:
   database:
     schema: eventuate

@@ -38,22 +38,18 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- ── Eventuate Local ES — JDBC event store for Spring Boot ─ -->
-        <!--   Registers AggregateRepository, auto-creates eventuate schema  -->
-        <dependency>
-            <groupId>io.eventuate.local.java</groupId>
-            <artifactId>eventuate-local-java-spring-jdbc-starter</artifactId>
-        </dependency>
-        <!--   Event dispatching / @EventSubscriber wiring                  -->
-        <dependency>
-            <groupId>io.eventuate.local.java</groupId>
-            <artifactId>eventuate-local-java-spring-events-starter</artifactId>
-        </dependency>
-
         <!-- ── Eventuate Tram — outbox + Kafka transport ────────────── -->
+        <!--   Post-DD-14: state-stored aggregate, no Eventuate Local ES.  -->
         <dependency>
             <groupId>io.eventuate.tram.core</groupId>
             <artifactId>eventuate-tram-spring-jdbc-kafka</artifactId>
+        </dependency>
+
+        <!-- ── Eventuate Tram domain events — DomainEventPublisher + ──── -->
+        <!--   DomainEventDispatcher: publish via outbox / consume projections -->
+        <dependency>
+            <groupId>io.eventuate.tram.core</groupId>
+            <artifactId>eventuate-tram-spring-events</artifactId>
         </dependency>
 
         <!-- ── Eventuate Tram Sagas — orchestration DSL ─────────────── -->

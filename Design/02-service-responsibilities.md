@@ -21,6 +21,8 @@
 
 **Emits events:** `OfferPublished`, `OfferWithdrawn`, `PriceChanged` — consumed by Order projector so historical orders carry a price snapshot, not a live FK.
 
+**Store:** MongoDB (`vab_catalog`, collection `offers`) — see DD-16. Offers are polymorphic across categories (DIGITAL / PHYSICAL / SLOT) and their eligibility dimensions evolve often, so a document model fits better than a relational table of mostly-null columns. Read-heavy; a Redis cache invalidated by `OfferPublished`/`PriceChanged` is the next step (DD-15). Seeded on startup by `CatalogSeeder` when empty.
+
 **Does not own:** per-subscriber state, orders, inventory.
 
 **Deployment cadence driver:** content/pricing changes weekly, independent of transaction code.

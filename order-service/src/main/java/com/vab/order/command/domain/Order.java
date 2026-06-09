@@ -1,73 +1,114 @@
 package com.vab.order.command.domain;
 
-import com.vab.events.order.OrderConfirmed;
-import com.vab.events.order.OrderFailed;
-import com.vab.events.order.OrderPlaced;
-import io.eventuate.Event;
-import io.eventuate.ReflectiveMutableCommandProcessingAggregate;
-
+import jakarta.persistence.*;
 import java.time.Instant;
-import java.util.List;
 
 /**
- * Order aggregate — event-sourced via Eventuate Local.
+ * Order aggregate — state-stored JPA entity (post-DD-14).
  *
- * Pattern: process(Command) → List<Event>  (decides what happened)
- *          apply(Event)     → void         (mutates state from that event)
+ * <p>The aggregate's current state lives in one updatable row in
+ * {@code orders.orders}; it is NOT event-sourced. Domain events are published
+ * separately, in the same transaction, through the Eventuate Tram outbox
+ * ({@code OrderCommandService} + {@code DomainEventPublisher}).
  *
- * ReflectiveMutableCommandProcessingAggregate wires these by reflection,
- * matching method signatures — no explicit registration needed.
+ * <p>{@code @Version} gives optimistic locking and a monotonic per-order
+ * sequence that is stamped onto each published event so the read-side projector
+ * can discard out-of-order deliveries.
  */
-public class Order extends ReflectiveMutableCommandProcessingAggregate<Order, OrderCommand> {
+@Entity
+@Table(name = "orders", schema = "orders")
+public class Order {
 
-    private String       subscriberId;
-    private String       offerCode;
-    private long         amount;
-    private OrderStatus  status;
+    /** Aggregate type used as the Tram event topic / projector subscription. */
+    public static final String AGGREGATE_TYPE = "com.vab.order.command.domain.Order";
 
-    // ── Command handlers ─────────────────────────────────────────────────
+    @Id
+    @Column(name = "order_id", length = 255)
+    private String id;
 
-    public List<Event> process(PlaceOrderCommand cmd) {
-        return List.of(new OrderPlaced(
-                cmd.getSubscriberId(),
-                cmd.getOfferCode(),
-                cmd.getPriceSnapshotId(),
-                cmd.getAmount(),
-                cmd.getCurrency(),
-                cmd.getBillingMode(),
-                cmd.getIdempotencyKey()
-        ));
+    @Version
+    @Column(name = "version", nullable = false)
+    private long version;
+
+    @Column(name = "subscriber_id", nullable = false, length = 255)
+    private String subscriberId;
+
+    @Column(name = "offer_code", nullable = false, length = 255)
+    private String offerCode;
+
+    @Column(name = "price_snapshot_id", length = 255)
+    private String priceSnapshotId;
+
+    @Column(name = "amount", nullable = false)
+    private long amount;
+
+    @Column(name = "currency", nullable = false, length = 8)
+    private String currency;
+
+    @Column(name = "billing_mode", length = 32)
+    private String billingMode;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false, length = 32)
+    private OrderStatus status;
+
+    @Column(name = "placed_at")
+    private Instant placedAt;
+
+    @Column(name = "confirmed_at")
+    private Instant confirmedAt;
+
+    @Column(name = "failed_step", length = 64)
+    private String failedStep;
+
+    @Column(name = "failure_reason", columnDefinition = "text")
+    private String failureReason;
+
+    protected Order() {}  // JPA
+
+    /** Factory for a freshly placed order. */
+    public static Order place(String id, String subscriberId, String offerCode,
+                              String priceSnapshotId, long amount, String currency,
+                              String billingMode) {
+        Order o = new Order();
+        o.id              = id;
+        o.subscriberId    = subscriberId;
+        o.offerCode       = offerCode;
+        o.priceSnapshotId = priceSnapshotId;
+        o.amount          = amount;
+        o.currency        = currency;
+        o.billingMode     = billingMode;
+        o.status          = OrderStatus.PLACED;
+        o.placedAt        = Instant.now();
+        return o;
     }
 
-    public List<Event> process(ConfirmOrderCommand cmd) {
-        return List.of(new OrderConfirmed(Instant.now()));
+    // ── State transitions ─────────────────────────────────────────────────
+
+    public void confirm(Instant confirmedAt) {
+        this.status      = OrderStatus.CONFIRMED;
+        this.confirmedAt = confirmedAt;
     }
 
-    public List<Event> process(FailOrderCommand cmd) {
-        return List.of(new OrderFailed(cmd.getFailedStep(), cmd.getReason()));
+    public void fail(String failedStep, String reason) {
+        this.status        = OrderStatus.FAILED;
+        this.failedStep    = failedStep;
+        this.failureReason = reason;
     }
 
-    // ── Event appliers ────────────────────────────────────────────────────
+    // ── Accessors ──────────────────────────────────────────────────────────
 
-    public void apply(OrderPlaced event) {
-        this.subscriberId = event.getSubscriberId();
-        this.offerCode    = event.getOfferCode();
-        this.amount       = event.getAmount();
-        this.status       = OrderStatus.PLACED;
-    }
-
-    public void apply(OrderConfirmed event) {
-        this.status = OrderStatus.CONFIRMED;
-    }
-
-    public void apply(OrderFailed event) {
-        this.status = OrderStatus.FAILED;
-    }
-
-    // ── Accessors ─────────────────────────────────────────────────────────
-
-    public String      getSubscriberId() { return subscriberId; }
-    public String      getOfferCode()    { return offerCode; }
-    public long        getAmount()       { return amount; }
-    public OrderStatus getStatus()       { return status; }
+    public String      getId()              { return id; }
+    public long        getVersion()         { return version; }
+    public String      getSubscriberId()    { return subscriberId; }
+    public String      getOfferCode()       { return offerCode; }
+    public String      getPriceSnapshotId() { return priceSnapshotId; }
+    public long        getAmount()          { return amount; }
+    public String      getCurrency()        { return currency; }
+    public String      getBillingMode()     { return billingMode; }
+    public OrderStatus getStatus()          { return status; }
+    public Instant     getPlacedAt()        { return placedAt; }
+    public Instant     getConfirmedAt()     { return confirmedAt; }
+    public String      getFailedStep()      { return failedStep; }
+    public String      getFailureReason()   { return failureReason; }
 }

@@ -21,8 +21,18 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.eventuate.tram.core</groupId>
             <artifactId>eventuate-tram-spring-jdbc-kafka</artifactId>
+        </dependency>
+        <!-- Domain-event publish/subscribe Spring config (TramEventSubscriberConfiguration).
+             order-service gets this transitively via the saga starter; we need it explicitly. -->
+        <dependency>
+            <groupId>io.eventuate.tram.core</groupId>
+            <artifactId>eventuate-tram-spring-events</artifactId>
         </dependency>
         <dependency>
             <groupId>io.eventuate.tram.core</groupId>

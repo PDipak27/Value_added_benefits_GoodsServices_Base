@@ -1,51 +1,67 @@
 package com.vab.order.command.service;
 
-import com.vab.order.command.domain.*;
+import com.vab.events.order.OrderConfirmed;
+import com.vab.events.order.OrderFailed;
+import com.vab.events.order.OrderPlaced;
+import com.vab.order.command.domain.Order;
+import com.vab.order.command.domain.OrderRepository;
+import com.vab.order.command.domain.PlaceOrderCommand;
 import com.vab.order.idempotency.IdempotencyKey;
 import com.vab.order.idempotency.IdempotencyKeyRepository;
 import com.vab.order.saga.PlaceOrderSaga;
 import com.vab.order.saga.PlaceOrderSagaData;
-import io.eventuate.sync.EventuateAggregateStore;
+import io.eventuate.tram.events.publisher.DomainEventPublisher;
 import io.eventuate.tram.sagas.orchestration.SagaInstanceFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
-import java.util.Collections;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
+/**
+ * Write side of the Order aggregate (post-DD-14).
+ *
+ * <p>The aggregate is state-stored via JPA; domain events are published through
+ * the Eventuate Tram transactional outbox in the <em>same</em> JDBC transaction
+ * as the state change, giving the atomic "write + publish" guarantee without
+ * event-sourcing the aggregate. Eventuate CDC relays the outbox to Kafka.
+ */
 @Service
 public class OrderCommandService {
 
     private static final Logger log = LoggerFactory.getLogger(OrderCommandService.class);
 
-    private final EventuateAggregateStore    aggregateStore;
-    private final SagaInstanceFactory        sagaInstanceFactory;
-    private final PlaceOrderSaga             placeOrderSaga;
-    private final IdempotencyKeyRepository   idempotencyRepo;
+    private final OrderRepository          orderRepo;
+    private final DomainEventPublisher     domainEventPublisher;
+    private final SagaInstanceFactory      sagaInstanceFactory;
+    private final PlaceOrderSaga           placeOrderSaga;
+    private final IdempotencyKeyRepository idempotencyRepo;
 
-    public OrderCommandService(EventuateAggregateStore aggregateStore,
+    public OrderCommandService(OrderRepository orderRepo,
+                               DomainEventPublisher domainEventPublisher,
                                SagaInstanceFactory sagaInstanceFactory,
                                PlaceOrderSaga placeOrderSaga,
                                IdempotencyKeyRepository idempotencyRepo) {
-        this.aggregateStore     = aggregateStore;
-        this.sagaInstanceFactory = sagaInstanceFactory;
-        this.placeOrderSaga     = placeOrderSaga;
-        this.idempotencyRepo    = idempotencyRepo;
+        this.orderRepo            = orderRepo;
+        this.domainEventPublisher = domainEventPublisher;
+        this.sagaInstanceFactory  = sagaInstanceFactory;
+        this.placeOrderSaga       = placeOrderSaga;
+        this.idempotencyRepo      = idempotencyRepo;
     }
 
     /**
      * Places an order.
      *
-     * Idempotency: (subscriberId, idempotencyKey) lookup first.
-     * If hit → return stored orderId (no side effects).
-     * If miss → create aggregate + start Saga + store key (atomic in one transaction).
+     * <p>Idempotency: (subscriberId, idempotencyKey) lookup first. On hit, the
+     * stored orderId is returned with no side effects. On miss, the aggregate row
+     * is inserted, {@code OrderPlaced} is written to the outbox, the saga is
+     * started, and the idempotency key is stored — all in one transaction.
      *
-     * @return orderId (either new or previously stored)
+     * @return orderId (new or previously stored)
      */
     @Transactional
     public String placeOrder(PlaceOrderCommand cmd) {
@@ -63,75 +79,70 @@ public class OrderCommandService {
         log.info("Placing order: subscriberId={}, offerCode={}, amount={} {}",
                 cmd.getSubscriberId(), cmd.getOfferCode(), cmd.getAmount(), cmd.getCurrency());
 
-        // ── Create Order aggregate ─────────────────────────────────────
-        // Eventuate ES: save(entity class, command) → applies process() → persists events
-        var entityId = aggregateStore.save(
-                Order.class,
-                Collections.singletonList(
-                        new com.vab.events.order.OrderPlaced(
-                                cmd.getSubscriberId(),
-                                cmd.getOfferCode(),
-                                cmd.getPriceSnapshotId(),
-                                cmd.getAmount(),
-                                cmd.getCurrency(),
-                                cmd.getBillingMode(),
-                                cmd.getIdempotencyKey()
-                        )
-                ),
-                Optional.empty()
-        );
+        // ── Insert state-stored aggregate ──────────────────────────────
+        String orderId = "ord_" + UUID.randomUUID().toString().replace("-", "");
+        Order order = Order.place(
+                orderId,
+                cmd.getSubscriberId(),
+                cmd.getOfferCode(),
+                cmd.getPriceSnapshotId(),
+                cmd.getAmount(),
+                cmd.getCurrency(),
+                cmd.getBillingMode());
+        orderRepo.saveAndFlush(order);   // assigns @Version (0)
+        log.info("Order persisted (PLACED): orderId={}, version={}", orderId, order.getVersion());
 
-        String orderId = entityId.getEntityId();
-        log.info("Order aggregate persisted (OrderPlaced): orderId={}", orderId);
+        // ── Publish OrderPlaced via the Tram outbox (same tx) ──────────
+        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
+                new OrderPlaced(
+                        cmd.getSubscriberId(),
+                        cmd.getOfferCode(),
+                        cmd.getPriceSnapshotId(),
+                        cmd.getAmount(),
+                        cmd.getCurrency(),
+                        cmd.getBillingMode(),
+                        cmd.getIdempotencyKey(),
+                        order.getVersion())));
 
-        // ── Start Saga ────────────────────────────────────────────────
+        // ── Start saga ─────────────────────────────────────────────────
         PlaceOrderSagaData sagaData = new PlaceOrderSagaData(
                 orderId,
                 cmd.getSubscriberId(),
                 cmd.getOfferCode(),
                 cmd.getAmount(),
                 cmd.getCurrency(),
-                cmd.getBillingMode()
-        );
+                cmd.getBillingMode());
         sagaInstanceFactory.create(placeOrderSaga, sagaData);
         log.info("PlaceOrderSaga started: orderId={}", orderId);
 
-        // ── Store idempotency key (same transaction) ──────────────────
+        // ── Store idempotency key (same tx) ────────────────────────────
         idempotencyRepo.save(new IdempotencyKey(
                 cmd.getSubscriberId(), cmd.getIdempotencyKey(), orderId));
 
         return orderId;
     }
 
-    /**
-     * Called by the Saga's local step on successful fulfilment.
-     */
+    /** Called by the saga's local step on successful fulfilment. */
     @Transactional
     public void confirmOrder(String orderId) {
-        log.info("Confirming order (OrderConfirmed): orderId={}", orderId);
-        aggregateStore.update(
-                Order.class,
-                orderId,
-                Collections.singletonList(
-                        new com.vab.events.order.OrderConfirmed(java.time.Instant.now())
-                ),
-                Optional.empty()
-        );
+        log.info("Confirming order: orderId={}", orderId);
+        Order order = orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        order.confirm(Instant.now());
+        orderRepo.saveAndFlush(order);   // bumps @Version
+        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
+                new OrderConfirmed(order.getConfirmedAt(), order.getVersion())));
     }
 
-    /**
-     * Called by the Saga when a terminal failure is reached.
-     */
+    /** Called by the saga when a terminal failure is reached. */
     @Transactional
     public void failOrder(String orderId, String failedStep, String reason) {
-        log.warn("Failing order (OrderFailed): orderId={}, failedStep={}, reason={}", orderId, failedStep, reason);
-        aggregateStore.update(
-                Order.class,
-                orderId,
-                Collections.singletonList(
-                        new com.vab.events.order.OrderFailed(failedStep, reason)
-                ),
-                Optional.empty()
-        );
+        log.warn("Failing order: orderId={}, failedStep={}, reason={}", orderId, failedStep, reason);
+        Order order = orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        order.fail(failedStep, reason);
+        orderRepo.saveAndFlush(order);   // bumps @Version
+        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
+                new OrderFailed(failedStep, reason, order.getVersion())));
     }
 }

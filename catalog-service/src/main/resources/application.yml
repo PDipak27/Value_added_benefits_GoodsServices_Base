@@ -1,0 +1,24 @@
+server:
+  port: 8085
+  shutdown: graceful
+
+spring:
+  application:
+    name: catalog-service
+
+  # ── MongoDB (catalog store — DD-16) ─────────────────────────────────────
+  # Own database for the Catalog bounded context. Offers are seeded on startup
+  # by CatalogSeeder when the collection is empty (replaces the old Flyway seed).
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/vab_catalog
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    com.vab: DEBUG

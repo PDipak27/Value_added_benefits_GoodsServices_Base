@@ -16,6 +16,7 @@ public class PlaceOrderSagaData {
     // Populated as Saga progresses
     private String reservationId;
     private String authId;
+    private String captureId;
     private String externalRef;
 
     public PlaceOrderSagaData() {}
@@ -38,9 +39,11 @@ public class PlaceOrderSagaData {
     public String getBillingMode()   { return billingMode; }
     public String getReservationId() { return reservationId; }
     public String getAuthId()        { return authId; }
+    public String getCaptureId()     { return captureId; }
     public String getExternalRef()   { return externalRef; }
 
     public void setReservationId(String reservationId) { this.reservationId = reservationId; }
     public void setAuthId(String authId)               { this.authId = authId; }
+    public void setCaptureId(String captureId)         { this.captureId = captureId; }
     public void setExternalRef(String externalRef)     { this.externalRef = externalRef; }
 }
