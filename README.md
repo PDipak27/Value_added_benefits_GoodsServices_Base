@@ -52,7 +52,7 @@ projector consumes from Kafka and materializes the read model in MongoDB.
 | Service | Role |
 |---|---|
 | **api-gateway** | TLS, JWT validation, routing, OIDC provider endpoints. Owns no domain data. |
-| **catalog-service** | Offer definitions, price snapshots, eligibility rules. Stored in MongoDB — polymorphic, often-changing offer documents (see Design DD-16). |
+| **catalog-service** | Offer definitions, price snapshots, eligibility rules. Stored in MongoDB — polymorphic, often-changing offer documents (DD-16). Read/admin API; reads cached in Redis (evict-on-write + TTL, DD-17). |
 | **order-service** *(depth service)* | State-stored Order aggregate + outbox, `PlaceOrderSaga` orchestration, MongoDB projections, idempotency, read API. Single deployable, three internal packages (`command` / `saga` / `query`). |
 | **inventory-service** | Saga participant. Reserves/commits/releases three inventory types: `PHYSICAL`, `SLOT`, `LICENSE`. |
 | **billing-stub-service** | Saga participant. Simulated `Authorize`/`Capture`/`Refund` over a real network boundary. |
@@ -71,6 +71,7 @@ projector consumes from Kafka and materializes the read model in MongoDB.
 | Messaging / event log | Apache Kafka (KRaft — no ZooKeeper quorum) |
 | Write store | PostgreSQL 18 (order write side: order state + outbox + saga + idempotency) |
 | Document store | MongoDB 7 (order read-model projections + catalog store; order reads have a read-your-writes fallback) |
+| Catalog read-cache | Redis 7 (evict-on-write + 15s TTL, not event-driven — DD-17) |
 | Change data capture | Eventuate CDC (Polling mode) |
 | Schema registry (dev) | Apicurio (in-memory) |
 
@@ -81,7 +82,7 @@ projector consumes from Kafka and materializes the read model in MongoDB.
 ```
 vabags_base/
 ├── pom.xml                 # parent POM (BOMs, Java 17, plugins)
-├── docker-compose.yml      # Kafka, ZK, CDC, Mongo, Apicurio
+├── docker-compose.yml      # Kafka, ZK, CDC, Mongo, Redis, Apicurio
 ├── shared-events/          # shared event/command contracts
 ├── api-gateway/
 ├── catalog-service/
@@ -103,7 +104,7 @@ Full instructions (Postgres setup, schema, smoke test, troubleshooting) live in
 # 1. Create the 'vab' Postgres DB + 'eventuate' user, then apply the schema
 psql -U eventuate -d vab -f deploy/postgres-init/01-eventuate-schema.sql
 
-# 2. Start infrastructure (Kafka, ZooKeeper, CDC, MongoDB, Apicurio)
+# 2. Start infrastructure (Kafka, ZooKeeper, CDC, MongoDB, Redis, Apicurio)
 docker-compose up -d
 
 # 3. Build all modules

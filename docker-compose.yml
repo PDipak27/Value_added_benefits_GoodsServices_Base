@@ -131,6 +131,22 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Redis — catalog read-cache (DD-17) ───────────────────────────────────
+  # Shared cache for the read-heavy, write-rare catalog. Invalidation is local
+  # evict-on-write (catalog admin API) + a 15s TTL backstop — not event-driven.
+  redis:
+    image: redis:7-alpine
+    container_name: vab-redis
+    ports:
+      - "6379:6379"
+    environment:
+      TZ: Asia/Kolkata
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ── Apicurio Schema Registry (in-memory, dev only) ────────────────────────
   apicurio:
     image: apicurio/apicurio-registry-mem:latest-release

@@ -13,6 +13,7 @@
 | CDC leader election | **ZooKeeper** (`confluentinc/cp-zookeeper:7.7.1`) on `:2181` | Eventuate CDC uses a ZK lock (`/eventuate/cdc/leader/tram`) to coordinate CDC replicas — required by the framework even with a single instance, and what makes a **multi-instance (HA) CDC** deployment safe. Independent of Kafka's KRaft quorum. |
 | Write store | **PostgreSQL 18** (locally installed, not containerised) — Order write side only (order state + Tram outbox + saga + idempotency) | User preference; CDC connects via `host.docker.internal` |
 | Read / document store | **MongoDB 7** — Order read-model projections **and** the Catalog store (DD-16) | Document model suits denormalized order projections; also fits polymorphic, often-changing offer documents (Catalog is its own `vab_catalog` database) |
+| Catalog read-cache | **Redis 7** — shared cache for catalog reads (DD-17) | Read-heavy, write-rare catalog; invalidation is local evict-on-write + 15s TTL (not event-driven — writer and cache are the same service) |
 | Schema registry | **Apicurio** (OSS, in-memory for dev) | Same REST API as Confluent SR; zero license cost |
 | OIDC Provider | Spring Authorization Server (iteration 6+) | Production-grade; not hand-rolled |
 | Observability | OTel → Loki + Grafana | Existing repo wiring |
@@ -99,7 +100,8 @@ VA-BAGS/
 | `vab-kafka` | `apache/kafka:3.7.1` | 9092 | Broker (KRaft — no ZK quorum) |
 | `vab-zk` | `confluentinc/cp-zookeeper:7.7.1` | 2181 | CDC leader-election lock store (not used by Kafka) |
 | `vab-cdc` | `eventuateio/eventuate-cdc-service:0.19.0.RELEASE` | 8080 | Polling reader → Kafka publisher (two pipelines: Local ES + Tram) |
-| `vab-mongo` | `mongo:7` | 27017 | Read projections |
+| `vab-mongo` | `mongo:7` | 27017 | Read projections + catalog store |
+| `vab-redis` | `redis:7-alpine` | 6379 | Catalog read-cache (DD-17) |
 | `vab-apicurio` | `apicurio/apicurio-registry-mem:latest-release` | 8090 | Schema registry (container :8080 mapped to host :8090 to avoid collision with CDC) |
 
 Postgres runs locally — CDC connects via `host.docker.internal:5432`.

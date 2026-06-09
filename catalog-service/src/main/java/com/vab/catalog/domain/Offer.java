@@ -65,6 +65,12 @@ public class Offer {
         this.minKycLevel        = minKycLevel;
     }
 
+    /** Mark this offer withdrawn (no longer purchasable). */
+    public void withdraw() { this.status = OfferStatus.WITHDRAWN; }
+
+    /** (Re)publish this offer. */
+    public void publish()  { this.status = OfferStatus.PUBLISHED; }
+
     public String      getOfferCode()         { return offerCode; }
     public String      getName()              { return name; }
     public String      getDescription()       { return description; }

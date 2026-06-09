@@ -14,14 +14,21 @@
 
 **Owns:** offer definitions, price snapshots, eligibility rules (plan tier, region, device age, KYC level).
 
-**Exposes:**
+**Exposes (read):**
 - `GET /v1/offers` — server-side eligibility-filtered list
 - `GET /v1/offers/{offerCode}` — offer detail with `priceSnapshotId`
 - `POST /v1/offers/{offerCode}:evaluate` — detailed eligibility result
 
-**Emits events:** `OfferPublished`, `OfferWithdrawn`, `PriceChanged` — consumed by Order projector so historical orders carry a price snapshot, not a live FK.
+**Exposes (admin/write):**
+- `POST /v1/offers` — create + publish an offer
+- `PUT /v1/offers/{offerCode}` — replace an offer (price/eligibility)
+- `POST /v1/offers/{offerCode}:withdraw` — withdraw an offer
 
-**Store:** MongoDB (`vab_catalog`, collection `offers`) — see DD-16. Offers are polymorphic across categories (DIGITAL / PHYSICAL / SLOT) and their eligibility dimensions evolve often, so a document model fits better than a relational table of mostly-null columns. Read-heavy; a Redis cache invalidated by `OfferPublished`/`PriceChanged` is the next step (DD-15). Seeded on startup by `CatalogSeeder` when empty.
+**Emits events:** `OfferPublished`, `OfferWithdrawn`, `PriceChanged` — *deferred*; intended for a cross-service consumer (Order projector, so historical orders carry a price snapshot, not a live FK). **Not** used for cache invalidation — see DD-17.
+
+**Store:** MongoDB (`vab_catalog`, collection `offers`) — see DD-16. Offers are polymorphic across categories (DIGITAL / PHYSICAL / SLOT) and their eligibility dimensions evolve often, so a document model fits better than a relational table of mostly-null columns. Seeded on startup by `CatalogSeeder` when empty.
+
+**Cache:** read-heavy and write-rare (≈ twice/week), so reads are served through a shared **Redis** cache (DD-17). Invalidation is **local evict-on-write** (the admin endpoints above call `@CacheEvict`) plus a 15s TTL backstop — not event-driven, because the writer and the cache live in the same service.
 
 **Does not own:** per-subscriber state, orders, inventory.
 

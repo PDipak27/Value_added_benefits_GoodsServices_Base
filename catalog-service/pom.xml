@@ -23,6 +23,18 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-mongodb</artifactId>
         </dependency>
+        <!-- Redis read-cache for the (read-heavy, write-rare) catalog (DD-17).
+             Invalidation is local evict-on-write + a short TTL backstop — NOT
+             event-driven, because the writer (admin API) and the cache live in
+             the same service, so there is nothing to publish an event to. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-cache</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>

@@ -12,6 +12,14 @@ spring:
   data:
     mongodb:
       uri: mongodb://localhost:27017/vab_catalog
+    # ── Redis read-cache (DD-17) ──────────────────────────────────────────
+    redis:
+      host: localhost
+      port: 6379
+
+  # Cache TTL (15s) is configured in CacheConfig; writes evict inline.
+  cache:
+    type: redis
 
 management:
   endpoints:

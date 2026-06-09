@@ -7,10 +7,13 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * Catalog &amp; Eligibility Service.
  *
  * <p>Owns offer definitions, price snapshots, and eligibility rules. Exposes a
- * read-mostly REST surface; eligibility filtering is applied server-side.
+ * read-mostly REST surface (eligibility filtering applied server-side) plus an
+ * admin write API. Reads are served through a Redis cache invalidated by
+ * evict-on-write + a short TTL (DD-17).
  *
- * <p>Event emission (OfferPublished / OfferWithdrawn / PriceChanged) is deferred
- * until the messaging dependencies are added — see Design/02.
+ * <p>Catalog domain-event emission (OfferPublished / OfferWithdrawn /
+ * PriceChanged) for cross-service consumers is deferred — it is a separate
+ * concern from cache invalidation; see Design/02 and DD-17.
  */
 @SpringBootApplication
 public class CatalogServiceApplication {

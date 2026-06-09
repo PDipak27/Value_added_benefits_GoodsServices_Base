@@ -234,7 +234,7 @@ The "polling is a bottleneck" critique is rejected at this volume: ~50 TPS is a 
 
 **Rationale:** At 300 RPS Postgres can serve point reads trivially, so the read store is an *optimization*, not a correctness dependency. The fallback gives **read-your-writes** for a freshly placed order and keeps `GET`-by-id **correct even when CDC/projector is down** — directly answering criticisms (1) and (2). The fallback is deliberately narrow: only lookup-by-`orderId`. List, search, and entitlement-uniqueness queries still require the projection, so the CQRS boundary (invariant 3) holds everywhere except the one bounded point read.
 
-**Related:** Catalog (read-heavy, weekly writes) is a strong fit for a **Redis cache invalidated by `OfferPublished`/`PriceChanged` events** — but Redis is *not* used for order read-your-writes (the Postgres fallback is simpler and avoids a dual-write). Order *history/analytics* is served from the Kafka-fed warehouse, and the hot order tables are **time-partitioned** rather than moved to a separate operational DB.
+**Related:** Catalog (read-heavy, weekly writes) gets a **Redis cache** — but invalidated by **local evict-on-write + a short TTL**, *not* by events (see **DD-17**; the writer and the cache are the same service, so there is nothing to publish to). Redis is *not* used for order read-your-writes either (the Postgres fallback is simpler and avoids a dual-write). Order *history/analytics* is served from the Kafka-fed warehouse, and the hot order tables are **time-partitioned** rather than moved to a separate operational DB.
 
 ---
 
@@ -259,3 +259,26 @@ The "polling is a bottleneck" critique is rejected at this volume: ~50 TPS is a 
 **What this changes:**
 - **Removed:** `spring-boot-starter-data-jpa`, the Postgres driver, Flyway, and `V1__catalog_schema.sql` from `catalog-service`.
 - **Added:** `spring-boot-starter-data-mongodb`; `Offer` is a `@Document`; `OfferRepository` is a `MongoRepository`; seed data moves from the Flyway script to `CatalogSeeder` (seeds on startup when the collection is empty). Eligibility logic is unchanged.
+
+---
+
+## DD-17 — Catalog read-cache: Redis with evict-on-write + TTL, not event-driven invalidation
+
+**Problem:** Catalog is read-heavy and a hot path for every offer-browse, but it changes at most a couple of times a week. A Redis cache is an obvious win. DD-15 originally sketched the cache as *"invalidated by `OfferPublished`/`PriceChanged` events"* — but that framing conflated two independent concerns and, taken literally, was badly over-built for the actual requirement.
+
+**The key observation:** event-driven cache invalidation exists to carry a "data changed" signal from *the service that owns the write* to *a different service that holds a cache*. Here they are **the same service** — catalog-service owns both the admin write API and the cached reads. There is no remote cache to notify, so there is nothing to publish an event *to*.
+
+**Options:**
+- A) **Event-driven** — author catalog domain events, publish them (Mongo outbox + change-stream relay, or Debezium + Outbox SMT), and evict on consume. Requires a Mongo replica set, a custom/operated relay, resume-token checkpointing, and (at >1 instance) leader election.
+- B) **Evict-on-write + short TTL** — the admin write path evicts the (shared Redis) caches inline via `@CacheEvict`; a 15s TTL backstops out-of-band edits.
+- C) TTL-only — simplest, but up to a full TTL of staleness even for an admin-API write.
+
+**Choice:** **B**
+
+**Rationale:** Because the cache is **shared Redis** and the writer is in-process, `@CacheEvict` on the admin write is immediately correct for **every** catalog instance — no events, no relay, no replica set, no leader election. The TTL (15s) is a *backstop*, not the mechanism: it bounds staleness from mutations that bypass the admin API (a manual `mongosh` edit, a re-seed). At ≈ twice-a-week writes, the sub-second freshness option A would buy is worth nothing, and option A's machinery (replica set + relay + checkpoint + HA) is a large, permanent operational cost for a pure caching need. Writes flush the whole (small) catalog cache (`allEntries = true`) rather than computing per-key evictions — simpler and cheaper at this write rate.
+
+**This corrects, not contradicts, DD-15:** the cache is real; only its *invalidation mechanism* changed from "events" to "local evict + TTL." Catalog **domain events** (`OfferPublished` / `PriceChanged`) remain worthwhile, but for a *different* reason — a genuine cross-service consumer (e.g. the Order projector keeping price snapshots). That is a separate, deferred decision (and where the option-A publish mechanism would legitimately return), independent of caching.
+
+**What this changes:**
+- **Added:** `spring-boot-starter-data-redis` + `spring-boot-starter-cache`; `CacheConfig` (`@EnableCaching`, JSON value serialization, 15s TTL); `@Cacheable` on `OfferRepository.findByStatus`/`findById`; `OfferAdminService` (`@CacheEvict(allEntries)`) + `OfferAdminController` (`POST /v1/offers`, `PUT /v1/offers/{code}`, `POST /v1/offers/{code}:withdraw`); a `redis:7-alpine` service in `docker-compose.yml`.
+- **Not added:** any Mongo replica set, outbox, change-stream relay, or HA leader election — none are needed for caching.
