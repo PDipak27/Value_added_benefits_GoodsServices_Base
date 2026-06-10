@@ -23,10 +23,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-mongodb</artifactId>
         </dependency>
-        <!-- Redis read-cache for the (read-heavy, write-rare) catalog (DD-17).
-             Invalidation is local evict-on-write + a short TTL backstop — NOT
-             event-driven, because the writer (admin API) and the cache live in
-             the same service, so there is nothing to publish an event to. -->
+        <!-- Two-tier read-cache for the (read-heavy, write-rare) catalog.
+             L1 = Caffeine (in-process heap, deserialized objects — DD-18);
+             L2 = shared Redis (DD-17). Invalidation is local evict-on-write +
+             a short TTL backstop — NOT event-driven, because the writer (admin
+             API) and the cache live in the same service. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
@@ -34,6 +35,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-cache</artifactId>
+        </dependency>
+        <!-- L1 in-process cache (DD-18): holds already-deserialized Offer objects
+             so a hot offer-browse skips ~5000 JSON deserializations per request. -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

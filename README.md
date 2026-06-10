@@ -52,7 +52,7 @@ projector consumes from Kafka and materializes the read model in MongoDB.
 | Service | Role |
 |---|---|
 | **api-gateway** | TLS, JWT validation, routing, OIDC provider endpoints. Owns no domain data. |
-| **catalog-service** | Offer definitions, price snapshots, eligibility rules. Stored in MongoDB — polymorphic, often-changing offer documents (DD-16). Read/admin API; reads cached in Redis (evict-on-write + TTL, DD-17). |
+| **catalog-service** | Offer definitions, price snapshots, eligibility rules. Stored in MongoDB — polymorphic, often-changing offer documents (DD-16). Read/admin API; reads served by a two-tier cache — Caffeine L1 + Redis L2 (evict-on-write + TTL, DD-17/DD-18). |
 | **order-service** *(depth service)* | State-stored Order aggregate + outbox, `PlaceOrderSaga` orchestration, MongoDB projections, idempotency, read API. Single deployable, three internal packages (`command` / `saga` / `query`). |
 | **inventory-service** | Saga participant. Reserves/commits/releases three inventory types: `PHYSICAL`, `SLOT`, `LICENSE`. |
 | **billing-stub-service** | Saga participant. Simulated `Authorize`/`Capture`/`Refund` over a real network boundary. |
@@ -71,7 +71,7 @@ projector consumes from Kafka and materializes the read model in MongoDB.
 | Messaging / event log | Apache Kafka (KRaft — no ZooKeeper quorum) |
 | Write store | PostgreSQL 18 (order write side: order state + outbox + saga + idempotency) |
 | Document store | MongoDB 7 (order read-model projections + catalog store; order reads have a read-your-writes fallback) |
-| Catalog read-cache | Redis 7 (evict-on-write + 15s TTL, not event-driven — DD-17) |
+| Catalog read-cache | Caffeine L1 (in-process) + Redis 7 L2 (shared); evict-on-write + 15s TTL, not event-driven — DD-17/DD-18 |
 | Change data capture | Eventuate CDC (Polling mode) |
 | Schema registry (dev) | Apicurio (in-memory) |
 

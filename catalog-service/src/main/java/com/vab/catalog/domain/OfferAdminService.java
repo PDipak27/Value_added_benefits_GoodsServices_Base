@@ -10,12 +10,13 @@ import org.springframework.stereotype.Service;
 import java.util.Optional;
 
 /**
- * Write side of the catalog (DD-17). Every mutation evicts both read-caches
- * inline, so a freshly published / re-priced / withdrawn offer is visible on the
- * next read across all instances (shared Redis) — no events, no relay. Catalog
- * writes are rare (≈ twice a week), so flushing the whole small cache
- * ({@code allEntries = true}) rather than computing per-key evictions is the
- * simpler, cheaper choice.
+ * Write side of the catalog (DD-17 / DD-18). Every mutation evicts both
+ * read-caches inline — clearing this instance's Caffeine L1 <em>and</em> the
+ * shared Redis L2 — so a freshly published / re-priced / withdrawn offer is
+ * visible on the next read here immediately and on other instances within the
+ * short L1 TTL (≤ 15s). No events, no relay. Catalog writes are rare
+ * (≈ twice a week), so flushing the whole small cache ({@code allEntries = true})
+ * rather than computing per-key evictions is the simpler, cheaper choice.
  *
  * <p>Catalog <em>domain</em> events (OfferPublished / PriceChanged) for
  * cross-service consumers (e.g. the Order projector's price snapshots) are a

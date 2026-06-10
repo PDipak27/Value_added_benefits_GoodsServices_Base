@@ -282,3 +282,29 @@ The "polling is a bottleneck" critique is rejected at this volume: ~50 TPS is a 
 **What this changes:**
 - **Added:** `spring-boot-starter-data-redis` + `spring-boot-starter-cache`; `CacheConfig` (`@EnableCaching`, JSON value serialization, 15s TTL); `@Cacheable` on `OfferRepository.findByStatus`/`findById`; `OfferAdminService` (`@CacheEvict(allEntries)`) + `OfferAdminController` (`POST /v1/offers`, `PUT /v1/offers/{code}`, `POST /v1/offers/{code}:withdraw`); a `redis:7-alpine` service in `docker-compose.yml`.
 - **Not added:** any Mongo replica set, outbox, change-stream relay, or HA leader election — none are needed for caching.
+
+---
+
+## DD-18 — Catalog cache is two-tier: Caffeine L1 (in-process) in front of Redis L2
+
+**Problem:** With the Redis cache from DD-17, an offer-browse still pays a real cost. The catalog holds ~5000 offers, and the browse path materializes a large list on every request. Served from Redis, each request transfers and **JSON-deserializes ~5000 documents** — a per-request CPU + latency tax that a network cache hit does not remove. The cache avoids the *Mongo* round-trip but not the *serde* round-trip.
+
+**The key observation:** the expensive part of a Redis hit here is not the network — it is reconstructing 5000 Java objects from JSON on every call. The fix is to keep the **already-materialized objects on the heap** of the reading instance, so a hot read does no deserialization at all.
+
+**Options:**
+- A) **Redis only (DD-17 status quo)** — one shared tier; every read deserializes.
+- B) **Caffeine (in-process) only** — zero serde, but per-instance, cold on every restart/scale-out, and loses the shared L2 that backstops misses.
+- C) **Two-tier: Caffeine L1 + Redis L2** — L1 serves hot reads with no serde; L2 absorbs L1 misses (cold start, post-eviction, TTL expiry) without going to Mongo.
+
+**Choice:** **C**
+
+**Rationale:** L1 removes the dominant cost (≈5000 deserializations/request) for the hot path — a hot read becomes a single in-process map lookup. L2 (Redis, DD-17) is retained as the shared far-cache that makes an L1 miss cheap and keeps cross-instance behavior sane. Both tiers use the **same short 15s TTL**, so the freshness contract is unchanged from DD-17; L1 is purely a latency/CPU accelerator, not a new source of truth. Reads flow **L1 → L2 → Mongo**; writes/evicts apply to **both** local tiers (plus the shared L2).
+
+**Guardrails kept honest:**
+- **Invalidation is unchanged in spirit (DD-17).** An admin write evicts this instance's L1 *and* the shared L2 inline (`@CacheEvict(allEntries)`). Other instances' L1 copies are not signaled — they expire on their own ≤15s TTL. That bounded cross-instance staleness is acceptable at ≈ twice-a-week writes (the same trade-off DD-17 already accepted for its TTL backstop). No events, no relay, no replica set, no leader election.
+- **L1 is bounded** (`maximumSize`, `expireAfterWrite`) — a hot-set accelerator, not a system of record. A restart or scale-out simply starts with a cold L1 that fills from L2.
+- **L1 holds live objects and serializes nothing;** only L2 uses the JSON serializer from DD-17.
+
+**What this changes:**
+- **Added:** `com.github.ben-manes.caffeine:caffeine`; a `TwoLevelCache` (`org.springframework.cache.Cache`) and `TwoLevelCacheManager` (`CacheManager`) in `catalog-service`; `CacheConfig` now defines the `cacheManager` pairing a Caffeine L1 (15s TTL, bounded size) with the DD-17 `RedisCacheManager` as L2.
+- **Unchanged:** the cache names, the `@Cacheable`/`@CacheEvict` annotations, the TTL, and the Redis L2 serialization — DD-18 slots a near-cache in front of DD-17 without altering its contract.

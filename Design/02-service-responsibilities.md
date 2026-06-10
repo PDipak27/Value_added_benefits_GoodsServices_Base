@@ -28,7 +28,7 @@
 
 **Store:** MongoDB (`vab_catalog`, collection `offers`) — see DD-16. Offers are polymorphic across categories (DIGITAL / PHYSICAL / SLOT) and their eligibility dimensions evolve often, so a document model fits better than a relational table of mostly-null columns. Seeded on startup by `CatalogSeeder` when empty.
 
-**Cache:** read-heavy and write-rare (≈ twice/week), so reads are served through a shared **Redis** cache (DD-17). Invalidation is **local evict-on-write** (the admin endpoints above call `@CacheEvict`) plus a 15s TTL backstop — not event-driven, because the writer and the cache live in the same service.
+**Cache:** read-heavy and write-rare (≈ twice/week), so reads are served through a **two-tier** cache — an in-process **Caffeine L1** in front of a shared **Redis L2** (DD-17 / DD-18). L1 spares the hot offer-browse from re-deserializing ~5000 documents per request; L2 backstops L1 misses without hitting Mongo. Invalidation is **local evict-on-write** (the admin endpoints above call `@CacheEvict`, clearing local L1 + shared L2) plus a 15s TTL on both tiers — not event-driven, because the writer and the cache live in the same service.
 
 **Does not own:** per-subscriber state, orders, inventory.
 

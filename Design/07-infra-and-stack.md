@@ -13,7 +13,7 @@
 | CDC leader election | **ZooKeeper** (`confluentinc/cp-zookeeper:7.7.1`) on `:2181` | Eventuate CDC uses a ZK lock (`/eventuate/cdc/leader/tram`) to coordinate CDC replicas — required by the framework even with a single instance, and what makes a **multi-instance (HA) CDC** deployment safe. Independent of Kafka's KRaft quorum. |
 | Write store | **PostgreSQL 18** (locally installed, not containerised) — Order write side only (order state + Tram outbox + saga + idempotency) | User preference; CDC connects via `host.docker.internal` |
 | Read / document store | **MongoDB 7** — Order read-model projections **and** the Catalog store (DD-16) | Document model suits denormalized order projections; also fits polymorphic, often-changing offer documents (Catalog is its own `vab_catalog` database) |
-| Catalog read-cache | **Redis 7** — shared cache for catalog reads (DD-17) | Read-heavy, write-rare catalog; invalidation is local evict-on-write + 15s TTL (not event-driven — writer and cache are the same service) |
+| Catalog read-cache | **Caffeine L1 (in-process) + Redis 7 L2 (shared)** — two-tier (DD-17 / DD-18) | Read-heavy, write-rare catalog; L1 avoids re-deserializing ~5000 offers per browse, L2 backstops L1 misses. Invalidation is local evict-on-write + 15s TTL on both tiers (not event-driven — writer and cache are the same service) |
 | Schema registry | **Apicurio** (OSS, in-memory for dev) | Same REST API as Confluent SR; zero license cost |
 | OIDC Provider | Spring Authorization Server (iteration 6+) | Production-grade; not hand-rolled |
 | Observability | OTel → Loki + Grafana | Existing repo wiring |
