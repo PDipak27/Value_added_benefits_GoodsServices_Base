@@ -301,10 +301,37 @@ The "polling is a bottleneck" critique is rejected at this volume: ~50 TPS is a 
 **Rationale:** L1 removes the dominant cost (≈5000 deserializations/request) for the hot path — a hot read becomes a single in-process map lookup. L2 (Redis, DD-17) is retained as the shared far-cache that makes an L1 miss cheap and keeps cross-instance behavior sane. Both tiers use the **same short 15s TTL**, so the freshness contract is unchanged from DD-17; L1 is purely a latency/CPU accelerator, not a new source of truth. Reads flow **L1 → L2 → Mongo**; writes/evicts apply to **both** local tiers (plus the shared L2).
 
 **Guardrails kept honest:**
-- **Invalidation is unchanged in spirit (DD-17).** An admin write evicts this instance's L1 *and* the shared L2 inline (`@CacheEvict(allEntries)`). Other instances' L1 copies are not signaled — they expire on their own ≤15s TTL. That bounded cross-instance staleness is acceptable at ≈ twice-a-week writes (the same trade-off DD-17 already accepted for its TTL backstop). No events, no relay, no replica set, no leader election.
+- **Invalidation is unchanged in spirit (DD-17).** An admin write evicts this instance's L1 *and* the shared L2 inline (`@CacheEvict(allEntries)`). Other instances' L1 copies are signaled via a Redis pub/sub broadcast (**DD-19**) so they clear near-immediately; the ≤15s L1 TTL is retained only as a backstop for a missed broadcast. No domain events, no relay, no replica set, no leader election.
 - **L1 is bounded** (`maximumSize`, `expireAfterWrite`) — a hot-set accelerator, not a system of record. A restart or scale-out simply starts with a cold L1 that fills from L2.
 - **L1 holds live objects and serializes nothing;** only L2 uses the JSON serializer from DD-17.
 
 **What this changes:**
 - **Added:** `com.github.ben-manes.caffeine:caffeine`; a `TwoLevelCache` (`org.springframework.cache.Cache`) and `TwoLevelCacheManager` (`CacheManager`) in `catalog-service`; `CacheConfig` now defines the `cacheManager` pairing a Caffeine L1 (15s TTL, bounded size) with the DD-17 `RedisCacheManager` as L2.
 - **Unchanged:** the cache names, the `@Cacheable`/`@CacheEvict` annotations, the TTL, and the Redis L2 serialization — DD-18 slots a near-cache in front of DD-17 without altering its contract.
+
+---
+
+## DD-19 — Cross-instance L1 invalidation via Redis pub/sub, with skip-self
+
+**Problem:** DD-18's L1 is per-instance. When one catalog-service instance writes, it evicts its *own* L1 and the shared Redis L2 — but every *other* instance still holds stale objects in its L1 until that entry's 15s TTL expires. At ≈ twice-a-week writes a ≤15s cross-instance window is tolerable, but it is real, and the fix is cheap because Redis is already in the stack. (This is the "L1 broadcast invalidation" follow-up flagged in DD-18.)
+
+**The key observation:** L2 already lives in Redis, which has pub/sub. An eviction can publish a tiny "I invalidated X" message that every instance subscribes to and applies to *its* L1 — no new infrastructure, no Mongo replica set, no relay. The originator must **skip its own message** (it already evicted L1 synchronously); a per-instance UUID in the payload makes that a one-line check and also prevents a self-reinforcing loop.
+
+**Options:**
+- A) **TTL only (DD-18 status quo)** — peers converge within 15s; no broadcast.
+- B) **Redis keyspace notifications** — let Redis emit key-change events and have instances react. Works for *all* L2 changes (incl. out-of-band), but requires enabling `notify-keyspace-events`, is noisy (per-key, server-wide), and couples us to Redis server config.
+- C) **App-level pub/sub broadcast on eviction, stamped with an instance id, skip-self.** The cache layer publishes `{senderId, cacheName, key|clearAll}`; peers clear their L1; the sender ignores its own.
+
+**Choice:** **C**
+
+**Rationale:** A write is now reflected on every instance within a network hop instead of a TTL. Putting the publish **in the cache layer** (`TwoLevelCache.evict/clear`) rather than in the admin service means *any* eviction broadcasts — not just the admin API — which is the stated requirement ("invalidation for reasons other than the admin API shall also clear all instances' L1"). Skip-self (compare `senderId` to the local `InstanceId`) avoids redundant work on the originator and, more importantly, stops the broadcast from looping: the broadcast handler clears L1 through **local-only** methods that do *not* re-publish. Option B was rejected as heavier and server-config-coupled for no practical gain here; option A leaves the known ≤15s gap.
+
+**Guardrails kept honest:**
+- **Pub/sub is fire-and-forget (at-most-once).** An instance that is down when a message is sent misses it — so the **15s L1 TTL is retained as the convergence backstop**. The broadcast is an *optimization* over the TTL, not a replacement; correctness never depends on delivery.
+- **Publish failures never fail the write.** A Redis hiccup on `convertAndSend` is logged and swallowed; the triggering eviction (L1 + L2) has already happened and the TTL will converge peers.
+- **No re-publish on receive.** Applying a peer's message uses `clearLocalL1()` / `evictLocalL1()`, which touch L1 only (L2 was already cleared by the originator) and do not broadcast.
+- **Out-of-band L2 mutations** (a manual `redis-cli FLUSHDB`, a raw key delete) do not flow through the cache layer and so are *not* broadcast — they remain bounded by the 15s TTL, exactly as before. Catching those would need option B; it isn't worth it here.
+
+**What this changes:**
+- **Added (in `catalog-service`):** `InstanceId` (per-instance UUID bean); `CacheInvalidationMessage` (record `{senderId, cacheName, key}`); `CacheInvalidationPublisher` + `RedisCacheInvalidationPublisher` (publishes JSON over the `catalog:cache:invalidate` channel via `StringRedisTemplate`); `CacheInvalidationListener` (`MessageListener`, skip-self, local-only L1 clear); a `RedisMessageListenerContainer` bean subscribing to the channel. `TwoLevelCache` now publishes on every evict/clear and exposes non-publishing `clearLocalL1`/`evictLocalL1`; `TwoLevelCacheManager` threads the publisher into each cache.
+- **Unchanged:** the TTLs, cache names, annotations, L2 serialization, and the DD-17 invalidation semantics — DD-19 only *widens* a local eviction into a fleet-wide one.

@@ -22,16 +22,21 @@ import java.util.concurrent.ConcurrentMap;
  */
 public class TwoLevelCacheManager implements CacheManager {
 
-    private final CacheManager l2Manager;
-    private final Duration     l1Ttl;
-    private final long         l1MaxSize;
+    private final CacheManager               l2Manager;
+    private final Duration                   l1Ttl;
+    private final long                       l1MaxSize;
+    private final CacheInvalidationPublisher publisher;
 
     private final ConcurrentMap<String, Cache> caches = new ConcurrentHashMap<>();
 
-    public TwoLevelCacheManager(CacheManager l2Manager, Duration l1Ttl, long l1MaxSize) {
+    public TwoLevelCacheManager(CacheManager l2Manager,
+                                Duration l1Ttl,
+                                long l1MaxSize,
+                                CacheInvalidationPublisher publisher) {
         this.l2Manager = l2Manager;
         this.l1Ttl     = l1Ttl;
         this.l1MaxSize = l1MaxSize;
+        this.publisher = publisher;
     }
 
     @Override
@@ -44,7 +49,7 @@ public class TwoLevelCacheManager implements CacheManager {
                             .expireAfterWrite(l1Ttl)
                             .maximumSize(l1MaxSize)
                             .build();
-            return new TwoLevelCache(n, l1, l2);
+            return new TwoLevelCache(n, l1, l2, publisher);
         });
     }
 

@@ -21,23 +21,31 @@ import java.util.concurrent.Callable;
  * and <strong>evict/clear</strong> apply to <em>both</em> tiers so the local L1
  * never lags its own L2 after a local mutation.
  *
- * <p><strong>Cross-instance note:</strong> {@code evict}/{@code clear} clears this
- * instance's L1 and the shared L2; <em>other</em> instances' L1 copies expire on
- * their own short TTL (15s, DD-18). That bounded staleness is acceptable here —
- * catalog changes ≈ twice a week (same trade-off as DD-17's TTL backstop).
+ * <p><strong>Cross-instance invalidation (DD-19):</strong> every {@code evict}/
+ * {@code clear} also publishes a broadcast (via {@link CacheInvalidationPublisher})
+ * so <em>other</em> instances clear their L1 near-immediately. The 15s L1 TTL
+ * remains a backstop for any broadcast that is missed (a peer that was down) or
+ * any out-of-band Redis mutation. The local synchronous eviction plus the
+ * broadcast means a write is reflected everywhere within a network hop, not a
+ * TTL. The local-only {@link #clearLocalL1()} / {@link #evictLocalL1(Object)}
+ * methods (used when <em>applying</em> a received broadcast) deliberately do
+ * <strong>not</strong> re-publish — that would loop forever.
  */
 public class TwoLevelCache implements Cache {
 
     private final String name;
     private final com.github.benmanes.caffeine.cache.Cache<Object, Object> l1;
     private final Cache l2;
+    private final CacheInvalidationPublisher publisher;
 
     public TwoLevelCache(String name,
                          com.github.benmanes.caffeine.cache.Cache<Object, Object> l1,
-                         Cache l2) {
-        this.name = name;
-        this.l1   = l1;
-        this.l2   = l2;
+                         Cache l2,
+                         CacheInvalidationPublisher publisher) {
+        this.name      = name;
+        this.l1        = l1;
+        this.l2        = l2;
+        this.publisher = publisher;
     }
 
     @Override
@@ -117,23 +125,43 @@ public class TwoLevelCache implements Cache {
     public void evict(Object key) {
         l1.invalidate(key);
         l2.evict(key);
+        publisher.publishEvict(name, key);
     }
 
     @Override
     public boolean evictIfPresent(Object key) {
         l1.invalidate(key);
-        return l2.evictIfPresent(key);
+        boolean evicted = l2.evictIfPresent(key);
+        publisher.publishEvict(name, key);
+        return evicted;
     }
 
     @Override
     public void clear() {
         l1.invalidateAll();
         l2.clear();
+        publisher.publishClear(name);
     }
 
     @Override
     public boolean invalidate() {
         l1.invalidateAll();
-        return l2.invalidate();
+        boolean hadEntries = l2.invalidate();
+        publisher.publishClear(name);
+        return hadEntries;
+    }
+
+    // ── Local-only invalidation (DD-19) ──────────────────────────────────────
+    // Applied when handling a broadcast FROM a peer: touch this instance's L1
+    // only — L2 was already cleared by the originator — and DO NOT re-publish.
+
+    /** Clear this instance's entire L1 without touching L2 or re-broadcasting. */
+    public void clearLocalL1() {
+        l1.invalidateAll();
+    }
+
+    /** Evict a single key from this instance's L1 without touching L2 or re-broadcasting. */
+    public void evictLocalL1(Object key) {
+        l1.invalidate(key);
     }
 }
