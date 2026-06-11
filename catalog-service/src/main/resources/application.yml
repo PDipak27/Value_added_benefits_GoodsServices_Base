@@ -13,9 +13,14 @@ spring:
     mongodb:
       uri: mongodb://localhost:27017/vab_catalog
     # ── Redis = L2 of the two-tier catalog cache (DD-17 / DD-18) ──────────
+    # Short timeouts so that, if Redis is down, a cache call fails fast and the
+    # CacheErrorHandler falls through to Mongo within ~0.5s instead of stalling
+    # on Lettuce's multi-second default (DD-20).
     redis:
       host: localhost
       port: 6379
+      timeout: 500ms
+      connect-timeout: 500ms
 
   # Cache manager is defined in CacheConfig (Caffeine L1 + Redis L2, 15s TTL),
   # so Spring Boot's cache auto-configuration backs off — no spring.cache.type.

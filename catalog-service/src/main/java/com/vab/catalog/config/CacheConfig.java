@@ -6,7 +6,9 @@ import com.fasterxml.jackson.annotation.PropertyAccessor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
 import org.springframework.cache.CacheManager;
+import org.springframework.cache.annotation.CachingConfigurer;
 import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.cache.interceptor.CacheErrorHandler;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.cache.RedisCacheConfiguration;
@@ -52,7 +54,7 @@ import java.util.UUID;
  */
 @Configuration
 @EnableCaching
-public class CacheConfig {
+public class CacheConfig implements CachingConfigurer {
 
     /** Cache of the published-offer list ({@code findByStatus(PUBLISHED)}). */
     public static final String OFFERS_BY_STATUS = "offersByStatus";
@@ -85,6 +87,18 @@ public class CacheConfig {
                 .cacheDefaults(catalogCacheConfiguration())
                 .build();
         return new TwoLevelCacheManager(l2, L1_TTL, L1_MAX_SIZE, cacheInvalidationPublisher);
+    }
+
+    /**
+     * Makes the cache layer fail-open if Redis (L2) is unreachable (DD-20):
+     * cache errors are logged and swallowed so {@code @Cacheable} reads fall
+     * through to Mongo and {@code @CacheEvict} writes still return success. This
+     * overrides Spring's default {@code SimpleCacheErrorHandler}, which rethrows.
+     */
+    @Bean
+    @Override
+    public CacheErrorHandler errorHandler() {
+        return new LoggingCacheErrorHandler();
     }
 
     /** Unique id for this instance — stamped into broadcasts so receivers can skip-self (DD-19). */

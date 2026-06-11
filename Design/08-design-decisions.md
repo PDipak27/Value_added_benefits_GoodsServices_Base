@@ -335,3 +335,35 @@ The "polling is a bottleneck" critique is rejected at this volume: ~50 TPS is a 
 **What this changes:**
 - **Added (in `catalog-service`):** `InstanceId` (per-instance UUID bean); `CacheInvalidationMessage` (record `{senderId, cacheName, key}`); `CacheInvalidationPublisher` + `RedisCacheInvalidationPublisher` (publishes JSON over the `catalog:cache:invalidate` channel via `StringRedisTemplate`); `CacheInvalidationListener` (`MessageListener`, skip-self, local-only L1 clear); a `RedisMessageListenerContainer` bean subscribing to the channel. `TwoLevelCache` now publishes on every evict/clear and exposes non-publishing `clearLocalL1`/`evictLocalL1`; `TwoLevelCacheManager` threads the publisher into each cache.
 - **Unchanged:** the TTLs, cache names, annotations, L2 serialization, and the DD-17 invalidation semantics — DD-19 only *widens* a local eviction into a fleet-wide one.
+
+---
+
+## DD-20 — Cache is fail-open: a Redis (L2) outage degrades to Mongo, never an error
+
+**Problem:** MongoDB is the source of truth; Redis (L2) and Caffeine (L1) are accelerators (DD-17/DD-18). The catalog must therefore keep serving reads *and* accepting admin writes even if a cache backend is down. But Spring's default cache error handler (`SimpleCacheErrorHandler`) **rethrows** any exception the backend raises. With Redis unreachable, that turns a routine cache-aside read (L1 miss → `l2.get`) and a post-write eviction (`@CacheEvict` → `l2.clear`) into a `RedisConnectionFailureException` that propagates to the caller — so `GET /v1/offers` and the admin endpoints would **fail even though Mongo is healthy**. The accelerator becomes a single point of failure, which inverts its purpose.
+
+**Which backend can actually fail:** Caffeine (L1) is in-process — it cannot be "down" independently; the only failure mode is JVM OOM, which crashes the service regardless of any handler. So the real exposure is **Redis (L2)**: network partition, restart, eviction-storm refusal.
+
+**Options:**
+- A) **Default handler (status quo)** — cache backend errors rethrow; a Redis outage fails reads and writes.
+- B) **Custom `CacheErrorHandler` that logs + swallows** — cache calls that fail are treated as misses/no-ops, so the cached method falls through to Mongo.
+- C) **Wrap every repository call in manual try/catch** — defeats the purpose of the declarative `@Cacheable`/`@CacheEvict` abstraction and scatters the policy.
+
+**Choice:** **B**
+
+**Rationale:** A near/far cache should be **fail-open**: if the cache can't help, get out of the way and let the source answer. `CacheErrorHandler` is exactly Spring's hook for this — registered once via `CachingConfigurer.errorHandler()`, it applies uniformly to every `@Cacheable`/`@CacheEvict` without touching repository code (rejecting C). Per operation:
+- **get** → logged as a miss → Spring invokes the method → read served from **Mongo**.
+- **put** → value just isn't cached this round → no correctness impact.
+- **evict / clear** → the shared L2 couldn't be cleared, but the local L1 eviction in `TwoLevelCache` already ran and the **15s TTL converges** the rest; the write (already committed to Mongo) still returns success.
+
+The trade-off is **bounded staleness, not lost data**: during a Redis outage a peer's L1 may serve ≤15s-old offers — acceptable for a catalog that changes ≈twice a week (DD-17).
+
+**Guardrails kept honest:**
+- **L1-first write ordering.** `TwoLevelCache.put` now warms **L1 before L2**, so a hot key stays served from the in-process cache even while Redis is down (only the one `l2.put` per key fails, is swallowed, and L1 still holds the value). Reads then cost at most one failed L2 probe per key per 15s TTL window.
+- **Fast failure.** `spring.data.redis.timeout`/`connect-timeout` are bounded to **500ms** so a down Redis degrades to Mongo in ~½ second instead of stalling on Lettuce's multi-second default — the difference between "slightly slower" and "request times out."
+- **Publish failures already swallowed (DD-19).** The pub/sub broadcast was already fail-soft; DD-20 extends the same fail-open posture to the *cache data path* itself.
+- **Errors are visible.** Every swallowed failure is logged at WARN (`LoggingCacheErrorHandler`) so a Redis outage is observable, not silent.
+
+**What this changes:**
+- **Added (in `catalog-service`):** `LoggingCacheErrorHandler` (`CacheErrorHandler` — log + swallow for get/put/evict/clear); `CacheConfig` now implements `CachingConfigurer` and registers it via `errorHandler()`. `TwoLevelCache.put` reordered to L1-then-L2. `spring.data.redis.timeout`/`connect-timeout: 500ms` in `application.yml`.
+- **Unchanged:** cache names, TTLs, annotations, L2 serialization, and the DD-17/18/19 invalidation semantics — DD-20 only changes *what happens when the cache backend errors*, not the happy path.

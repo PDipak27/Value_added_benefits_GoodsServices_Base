@@ -104,9 +104,11 @@ public class TwoLevelCache implements Cache {
 
     @Override
     public void put(Object key, @Nullable Object value) {
-        l2.put(key, value);
         if (value != null) {
+            // L1 first: if L2 (Redis) is down, the in-process L1 still gets warmed
+            // and the L2 failure is swallowed by the CacheErrorHandler (DD-20).
             l1.put(key, value);
+            l2.put(key, value);
         }
     }
 
