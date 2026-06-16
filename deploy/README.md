@@ -69,14 +69,16 @@ Each service is an independent Spring Boot app. In separate terminals:
 | # | Command | Port | Needed for |
 |---|---------|------|-----------|
 | 1 | `cd order-service && mvn spring-boot:run` | 8081 | always — command + saga + query |
-| 2 | `cd inventory-service && mvn spring-boot:run` | 8082 | saga step 1 (reserve/commit/release) |
-| 3 | `cd billing-stub-service && mvn spring-boot:run` | 8083 | saga steps 2–3 (authorize/capture/refund) |
-| 4 | `cd notification-service && mvn spring-boot:run` | 8084 | reacts to `OrderConfirmed` / `OrderFailed` |
-| 5 | `cd catalog-service && mvn spring-boot:run` | 8085 | offer browse + eligibility (independent of the saga) |
-| 6 | `cd api-gateway && mvn spring-boot:run` | 8080 | single front door that routes to the above |
+| 2 | `cd inventory-service && mvn spring-boot:run` | 8082 | reserve/commit (PAY_NOW), allocate (BILL_TO_MOBILE), release; all types finite |
+| 3 | `cd billing-service && mvn spring-boot:run` | 8083 | PAY_NOW authorize/capture (capture before fulfil, DD-24); BILL_TO_MOBILE checkAccountLimit/appendToLedger/reverseLedger |
+| 4 | `cd fulfilment-service && mvn spring-boot:run` | 8086 | fulfil (per product type) |
+| 5 | `cd notification-service && mvn spring-boot:run` | 8084 | reacts to `OrderConfirmed` / `OrderCompleted` / `OrderFailed` |
+| 6 | `cd catalog-service && mvn spring-boot:run` | 8085 | offer browse + eligibility; order-service verifies `productType` against it |
+| 7 | `cd api-gateway && mvn spring-boot:run` | 8080 | single front door that routes to the above |
 
-**Minimal happy-path saga:** terminals 1–3 (order → inventory → billing).
-Add 4 to see notifications fire; 5 to browse the catalog; 6 to exercise routing.
+**Minimal happy-path saga:** terminals 1–4 (order → inventory → billing → fulfilment).
+Add 5 to see notifications fire; 6 to browse the catalog (and for `productType`
+verification — order-service is fail-open if it's down); 7 to exercise routing.
 
 > The gateway (8080) routes `/v1/offers/**` → catalog (8085) and
 > `/v1/orders/**`, `/v1/entitlements/**` → order-service (8081). Inventory,
@@ -96,36 +98,118 @@ curl -s -X POST http://localhost:8081/v1/orders \
   -d '{
     "subscriberId":    "sub_test_001",
     "offerCode":       "OTT_NETFLIX_6M",
-    "priceSnapshotId": "ps_test_001",
+    "productType":     "DIGITAL_SUBSCRIPTION",
+    "priceSnapshotId": "ps_2026_05_netflix6m",
     "amount":          599,
     "currency":        "INR",
     "billingMode":     "BILL_TO_MOBILE"
   }'
 # → 202 Accepted, body: {"orderId":"ord_..."}
+# BILL_TO_MOBILE → checkAccountLimit → allocate inventory → appendToLedger → confirm;
+# fulfil then provisions a DIGITAL_SUBSCRIPTION entitlement (externalRef) and the order COMPLETEs
 
 # Wait ~1s, then check status
 curl -s http://localhost:8081/v1/orders/<orderId>
-# → 200 OK, status: "CONFIRMED"
+# → 200 OK, status: "CONFIRMED" (then "COMPLETED" once fulfilled)
 ```
 
 Replay the same request with the **same** `Idempotency-Key` → returns the **same** orderId, no new aggregate created.
 
+### Per-product-type happy paths
+
+Each type takes a different route through the saga and yields a different artifact
+on the completed order (see `fulfilment` sub-doc in `GET /v1/orders/{id}`). The
+examples below use `BILL_TO_MOBILE`, which allocates inventory in one step; a
+`PAY_NOW` order instead reserves → authorizes → commits before confirming, then
+**captures before fulfilling** (DD-24).
+
+```bash
+# PHYSICAL_GOOD — allocates stock, fulfil creates a shipment → trackingRef
+curl -s -X POST http://localhost:8081/v1/orders -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"subscriberId":"sub_test_010","offerCode":"ACC_POWERBANK_20K","productType":"PHYSICAL_GOOD",
+       "priceSnapshotId":"ps_2026_05_powerbank20k","amount":899,"currency":"INR","billingMode":"BILL_TO_MOBILE"}'
+
+# SOFTWARE_LICENSE — allocates one activation key, fulfil echoes it → activationKey
+curl -s -X POST http://localhost:8081/v1/orders -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"subscriberId":"sub_test_011","offerCode":"SW_ANTIVIRUS_1Y","productType":"SOFTWARE_LICENSE",
+       "priceSnapshotId":"ps_2026_05_antivirus1y","amount":499,"currency":"INR","billingMode":"BILL_TO_MOBILE"}'
+```
+
+> **License key-pool exhaustion:** `SW_ANTIVIRUS_1Y` is seeded with only **3** keys.
+> Place a 4th order for it (after 3 completions) → allocate/reserve fails with
+> `POOL_EXHAUSTED` → order `FAILED`. Compensating an in-flight order returns its key
+> to the FREE pool, so a subsequent order can succeed again.
+
 ### Compensation path (billing decline)
 
-The billing stub declines any `amount > 999`. Place an order above the limit to
-exercise the saga's LIFO rollback (release inventory) and terminal failure:
+For `PAY_NOW`, billing declines any `amount > 999`. The authorize step runs *after*
+inventory is reserved, so a decline exercises the saga's LIFO rollback (release the
+reservation) and terminal failure:
 
 ```bash
 curl -s -X POST http://localhost:8081/v1/orders \
   -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
-  -d '{"subscriberId":"sub_test_002","offerCode":"OTT_NETFLIX_6M",
+  -d '{"subscriberId":"sub_test_002","offerCode":"OTT_NETFLIX_6M","productType":"DIGITAL_SUBSCRIPTION",
        "priceSnapshotId":"ps_test_001","amount":1500,"currency":"INR",
-       "billingMode":"BILL_TO_MOBILE"}'
+       "billingMode":"PAY_NOW"}'
 
-# billing-stub log → "Billing DECLINED ... exceeds limit 999"
-# order-service log → saga step 2 DECLINED → release inventory → order FAILED
+# billing log → "Billing DECLINED ... exceeds limit 999"
+# order-service log → authorize DECLINED → release reserved inventory → order FAILED
 curl -s http://localhost:8081/v1/orders/<orderId>   # → status: FAILED
 ```
+
+> For `BILL_TO_MOBILE`, the equivalent guard is `checkAccountLimit`: an amount above
+> the subscriber's credit limit (default 1000), or a `SUSPENDED` account, fails the
+> saga before inventory is allocated. Seeded accounts: `sub-suspended` (SUSPENDED),
+> `sub-premium` (limit 5000).
+
+### Capture hard-decline at the pivot (PAY_NOW, DD-26)
+
+The **charge is the pivot** (`capture`), and the order is `CONFIRMED` right after it. A
+capture **amount of `777`** hard-declines (demo trigger), which is the pivot *failing to
+commit*: billing replies `withFailure`, the holds roll back LIFO, and the order ends
+`FAILED`. Nothing was captured, so there is no refund (`CAPTURE_FAILED` is retired):
+
+```bash
+curl -s -X POST http://localhost:8081/v1/orders \
+  -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"subscriberId":"sub_test_003","offerCode":"SW_ANTIVIRUS_1Y","productType":"SOFTWARE_LICENSE",
+       "priceSnapshotId":"ps_test_001","amount":777,"currency":"INR",
+       "billingMode":"PAY_NOW"}'
+
+# billing log → "Billing CAPTURE DECLINED ... amount=777"
+# order-service log → capture withFailure → compensate (release commit/reservation)
+# notification log → subscriber SMS (cancelled, not charged)
+curl -s http://localhost:8081/v1/orders/<orderId>   # → status: FAILED
+```
+
+> `amount=777` is below the `999` authorize ceiling, so authorize succeeds and the
+> failure surfaces only at capture.
+
+### Forward-recovery on a non-transient fulfil failure (DD-26)
+
+Past the pivot the saga is **forward-only**. A non-transient delivery failure (route
+closed, damaged good) replies `OrderFulfilmentFailed` as a **success-outcome** — the
+saga does *not* roll back; it sets `forwardRecover` and moves forward:
+refund (PAY_NOW) / reverseLedger (BTM) → release inventory → terminal
+`CANCELLED_REFUNDED`. Demo trigger: an **offer code containing `FAIL`**:
+
+```bash
+curl -s -X POST http://localhost:8081/v1/orders \
+  -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"subscriberId":"sub_test_003","offerCode":"OFF-FAIL","productType":"PHYSICAL_GOOD",
+       "priceSnapshotId":"ps_test_001","amount":499,"currency":"INR",
+       "billingMode":"PAY_NOW"}'
+
+# fulfilment log → "Fulfil FAILED (DELIVERY_FAILED demo trigger)"
+# order-service log → forwardRecover → refund → release → CANCELLED_REFUNDED
+# notification log → subscriber SMS (cancelled and fully refunded)
+curl -s http://localhost:8081/v1/orders/<orderId>   # → status: CANCELLED_REFUNDED
+```
+
+> A user cancel (`POST /v1/orders/<id>/cancel`) follows the same two checkpoints:
+> pre-pivot → roll back to `CANCELLED` (not charged); pre-fulfil (post-pivot) →
+> forward-recover to `CANCELLED_REFUNDED`. Once fulfilled/`COMPLETED`, cancel is `409`.
 
 ### Catalog & eligibility (catalog-service, :8085)
 

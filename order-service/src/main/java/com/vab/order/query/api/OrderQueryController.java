@@ -67,12 +67,18 @@ public class OrderQueryController {
         view.setOrderId(order.getId());
         view.setSubscriberId(order.getSubscriberId());
         view.setOfferCode(order.getOfferCode());
+        view.setProductType(order.getProductType());
         view.setAmount(order.getAmount());
         view.setCurrency(order.getCurrency());
         view.setStatus(order.getStatus().name());
         view.setPlacedAt(order.getPlacedAt());
         view.setConfirmedAt(order.getConfirmedAt());
+        view.setCompletedAt(order.getCompletedAt());
         view.setVersion(order.getVersion());
+        if (order.getCompletedAt() != null) {
+            view.setFulfilment(new OrderView.Fulfilment(order.getProductType(),
+                    order.getTrackingRef(), order.getActivationKey(), order.getExternalRef()));
+        }
         if (order.getPlacedAt() != null) {
             view.addTimelineEntry(order.getPlacedAt(), "PLACED");
         }

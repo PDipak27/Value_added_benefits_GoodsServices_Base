@@ -52,10 +52,11 @@ sequenceDiagram
     CDC->>DB: poll outbox (published = 0)
     CDC->>K: publish OrderPlaced + saga commands
     K->>SG: drive saga
-    SG->>INV: Reserve / Authorize / Provision
+    SG->>INV: hold inventory / billing / fulfil (per billingMode — DD-23)
     INV-->>SG: replies
     SG->>DB: confirmOrder → status CONFIRMED + OrderConfirmed event (one tx)
-    K->>PR: OrderPlaced / OrderConfirmed
+    SG->>DB: completeOrder → status COMPLETED + OrderCompleted event (after fulfil)
+    K->>PR: OrderPlaced / OrderConfirmed / OrderCompleted
     PR->>M: upsert orders_v1 / entitlements_v1
 ```
 
@@ -98,10 +99,12 @@ These are **domain events published via the Tram outbox** to Kafka. Two classes:
 | · | `order.EntitlementProvisioningRequested.v1` | Saga step 3 started | `targetSystem`, `externalAccountRef` |
 | ▶ | `order.EntitlementProvisioned.v1` | OTT REST success | `externalRef`, `validFrom`, `validUntil` |
 | · | `order.EntitlementProvisioningFailed.v1` | OTT REST failure | `reason`, `detail`, `retryable` |
-| ▶ | `order.OrderConfirmed.v1` | All steps succeeded | `confirmedAt` |
-| ▶ | `order.OrderFailed.v1` | Terminal failure | `failedStep`, `terminalReason` |
+| ▶ | `order.OrderConfirmed.v1` | Pivot passed, order guaranteed to settle (intermediate) | `confirmedAt`, `version`, `productType` |
+| ▶ | `order.OrderCompleted.v1` | Charge then fulfil done — terminal success (DD-23/DD-26) | `completedAt`, `version`, `productType`, `trackingRef?`, `activationKey?`, `externalRef?` |
+| ▶ | `order.OrderCancelled.v1` | Pre-pivot cancel/decline rolled back — nothing charged (DD-26) | `cancelledAt`, `version`, `reason` |
+| ▶ | `order.OrderCancelledRefunded.v1` | Post-pivot forward-recovery — charge refunded/reversed, inventory released (DD-26) | `cancelledAt`, `version`, `reason` |
+| ▶ | `order.OrderFailed.v1` | Terminal failure (incl. hard capture decline at the pivot) | `failedStep`, `terminalReason` |
 | · | `order.CompensationCompleted.v1` | All rollbacks done | `compensatedSteps` (ordered list) |
-| ▶ | `order.OrderCanceledByUser.v1` | Cancel command in cooling-off | `canceledAt`, `withinCoolingOff` |
 
 **Versioning rule:** `.v1` schemas are immutable. Only additive changes allowed. Breaking change → new `.v2` topic; projectors handle both during transition window. Old topic retained until all consumers drain.
 
@@ -141,15 +144,18 @@ These are **domain events published via the Tram outbox** to Kafka. Two classes:
   "offerName": "Netflix 6-month bundle",
   "amount": 599,
   "currency": "INR",
-  "status": "CONFIRMED",
+  "productType": "DIGITAL_SUBSCRIPTION",
+  "status": "COMPLETED",
   "placedAt": "...",
   "confirmedAt": "...",
+  "completedAt": "...",
+  "fulfilment": { "type": "DIGITAL_SUBSCRIPTION", "externalRef": "ott_ent_..." },
   "timeline": [
     { "at": "...", "status": "PLACED" },
-    { "at": "...", "status": "RESERVED" },
-    { "at": "...", "status": "CONFIRMED" }
+    { "at": "...", "status": "CONFIRMED" },
+    { "at": "...", "status": "COMPLETED" }
   ],
-  "version": 5
+  "version": 7
 }
 ```
 Indexes: `{subscriberId:1, placedAt:-1}`, `{status:1}`

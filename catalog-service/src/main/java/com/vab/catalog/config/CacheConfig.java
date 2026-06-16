@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.annotation.PropertyAccessor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.CachingConfigurer;
 import org.springframework.cache.annotation.EnableCaching;
@@ -31,7 +32,8 @@ import java.util.UUID;
  * (~5000 offers). Served from Redis alone, every request pays ~5000 JSON
  * deserializations; the L1 Caffeine layer holds the already-materialized objects
  * on the heap, so a hot read is a single in-process lookup and L2 (Redis) is hit
- * only on an L1 miss. Both tiers use a short 15s TTL.
+ * only on an L1 miss. TTLs are configurable (defaults: L1 120s, L2 300s) via
+ * {@code catalog.cache.l1-ttl-seconds} / {@code l2-ttl-seconds}.
  *
  * <p><strong>Invalidation.</strong> Because the writer (the admin API) and the
  * cache live in the <em>same</em> service, invalidation needs no domain events:
@@ -62,14 +64,17 @@ public class CacheConfig implements CachingConfigurer {
     /** Cache of single offers keyed by {@code offerCode} ({@code findById}). */
     public static final String OFFER_BY_CODE = "offerByCode";
 
-    /** Worst-case staleness for out-of-band edits; admin-API writes evict immediately. */
-    private static final Duration TTL = Duration.ofSeconds(15);
+    /** L1 (Caffeine) per-cache TTL in seconds; configurable, default 120s. */
+    @Value("${catalog.cache.l1-ttl-seconds:120}")
+    private long l1TtlSeconds;
 
-    /** L1 (Caffeine) per-cache TTL — matches the L2 TTL. */
-    private static final Duration L1_TTL = Duration.ofSeconds(15);
+    /** L2 (Redis) per-cache TTL in seconds — out-of-band-edit backstop; configurable, default 300s. */
+    @Value("${catalog.cache.l2-ttl-seconds:300}")
+    private long l2TtlSeconds;
 
-    /** L1 (Caffeine) per-cache entry cap — comfortably above the ~5000 offer codes. */
-    private static final long L1_MAX_SIZE = 10_000;
+    /** L1 (Caffeine) per-cache entry cap — above the ~5000 offer codes; configurable. */
+    @Value("${catalog.cache.l1-max-size:10000}")
+    private long l1MaxSize;
 
     /** Redis pub/sub channel for cross-instance L1 invalidation broadcasts (DD-19). */
     public static final String CACHE_INVALIDATION_CHANNEL = "catalog:cache:invalidate";
@@ -86,7 +91,7 @@ public class CacheConfig implements CachingConfigurer {
         RedisCacheManager l2 = RedisCacheManager.builder(connectionFactory)
                 .cacheDefaults(catalogCacheConfiguration())
                 .build();
-        return new TwoLevelCacheManager(l2, L1_TTL, L1_MAX_SIZE, cacheInvalidationPublisher);
+        return new TwoLevelCacheManager(l2, Duration.ofSeconds(l1TtlSeconds), l1MaxSize, cacheInvalidationPublisher);
     }
 
     /**
@@ -145,7 +150,7 @@ public class CacheConfig implements CachingConfigurer {
         GenericJackson2JsonRedisSerializer serializer = new GenericJackson2JsonRedisSerializer(mapper);
 
         return RedisCacheConfiguration.defaultCacheConfig()
-                .entryTtl(TTL)
+                .entryTtl(Duration.ofSeconds(l2TtlSeconds))
                 .disableCachingNullValues()  // don't cache 404s / absent offers
                 .serializeValuesWith(
                         RedisSerializationContext.SerializationPair.fromSerializer(serializer));

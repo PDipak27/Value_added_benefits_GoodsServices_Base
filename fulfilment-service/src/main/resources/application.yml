@@ -1,0 +1,42 @@
+server:
+  port: 8086
+  shutdown: graceful
+
+spring:
+  application:
+    name: fulfilment-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/vab
+    username: eventuate
+    password: eventuate
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: fulfilment
+
+  flyway:
+    enabled: true
+    schemas: fulfilment
+    locations: #flyway auto adds locations.
+    - classpath:db/migration
+
+eventuatelocal:
+  kafka:
+    bootstrap:
+      servers: localhost:9094
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    com.vab: DEBUG
+    io.eventuate: INFO

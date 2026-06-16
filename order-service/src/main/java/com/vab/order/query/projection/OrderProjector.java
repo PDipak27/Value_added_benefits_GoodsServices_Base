@@ -1,5 +1,8 @@
 package com.vab.order.query.projection;
 
+import com.vab.events.order.OrderCancelled;
+import com.vab.events.order.OrderCancelledRefunded;
+import com.vab.events.order.OrderCompleted;
 import com.vab.events.order.OrderConfirmed;
 import com.vab.events.order.OrderFailed;
 import com.vab.events.order.OrderPlaced;
@@ -45,11 +48,16 @@ public class OrderProjector {
                 .forAggregateType(Order.AGGREGATE_TYPE)
                 .onEvent(OrderPlaced.class, this::onPlaced)
                 .onEvent(OrderConfirmed.class, this::onConfirmed)
+                .onEvent(OrderCompleted.class, this::onCompleted)
+                .onEvent(OrderCancelled.class, this::onCancelled)
+                .onEvent(OrderCancelledRefunded.class, this::onCancelledRefunded)
                 .onEvent(OrderFailed.class, this::onFailed)
                 .build();
     }
 
-    private void onPlaced(DomainEventEnvelope<OrderPlaced> de) {
+    // Package-private (not private) so the projection logic can be unit-tested
+    // directly; the methods are still only wired via domainEventHandlers().
+    void onPlaced(DomainEventEnvelope<OrderPlaced> de) {
         OrderPlaced event   = de.getEvent();
         String      orderId = de.getAggregateId();
         long        version = event.getVersion();
@@ -67,6 +75,7 @@ public class OrderProjector {
         view.setOrderId(orderId);
         view.setSubscriberId(event.getSubscriberId());
         view.setOfferCode(event.getOfferCode());
+        view.setProductType(event.getProductType());
         view.setAmount(event.getAmount());
         view.setCurrency(event.getCurrency());
         view.setStatus("PLACED");
@@ -78,7 +87,7 @@ public class OrderProjector {
         log.info("Saved OrderView (PLACED): orderId={}", orderId);
     }
 
-    private void onConfirmed(DomainEventEnvelope<OrderConfirmed> de) {
+    void onConfirmed(DomainEventEnvelope<OrderConfirmed> de) {
         OrderConfirmed event   = de.getEvent();
         String         orderId = de.getAggregateId();
         long           version = event.getVersion();
@@ -93,6 +102,7 @@ public class OrderProjector {
             }
             view.setStatus("CONFIRMED");
             view.setConfirmedAt(event.getConfirmedAt());
+            view.setProductType(event.getProductType());
             view.setVersion(version);
             view.addTimelineEntry(event.getConfirmedAt(), "CONFIRMED");
             repo.save(view);
@@ -100,7 +110,75 @@ public class OrderProjector {
         }, () -> log.warn("OrderConfirmed for unknown orderId={} (no PLACED view yet)", orderId));
     }
 
-    private void onFailed(DomainEventEnvelope<OrderFailed> de) {
+    void onCompleted(DomainEventEnvelope<OrderCompleted> de) {
+        OrderCompleted event   = de.getEvent();
+        String         orderId = de.getAggregateId();
+        long           version = event.getVersion();
+
+        log.info("Projecting OrderCompleted: orderId={}, version={}", orderId, version);
+
+        repo.findById(orderId).ifPresentOrElse(view -> {
+            if (version <= view.getVersion()) {
+                log.info("Skipping stale OrderCompleted: orderId={}, incoming={}, current={}",
+                        orderId, version, view.getVersion());
+                return;
+            }
+            view.setStatus("COMPLETED");
+            view.setCompletedAt(event.getCompletedAt());
+            view.setProductType(event.getProductType());
+            view.setFulfilment(new OrderView.Fulfilment(
+                    event.getProductType(), event.getTrackingRef(),
+                    event.getActivationKey(), event.getExternalRef()));
+            view.setVersion(version);
+            view.addTimelineEntry(event.getCompletedAt(), "COMPLETED");
+            repo.save(view);
+            log.info("Saved OrderView (COMPLETED): orderId={}", orderId);
+        }, () -> log.warn("OrderCompleted for unknown orderId={} (no view yet)", orderId));
+    }
+
+    void onCancelled(DomainEventEnvelope<OrderCancelled> de) {
+        OrderCancelled event   = de.getEvent();
+        String         orderId = de.getAggregateId();
+        long           version = event.getVersion();
+
+        log.info("Projecting OrderCancelled: orderId={}, version={}", orderId, version);
+
+        repo.findById(orderId).ifPresentOrElse(view -> {
+            if (version <= view.getVersion()) {
+                log.info("Skipping stale OrderCancelled: orderId={}, incoming={}, current={}",
+                        orderId, version, view.getVersion());
+                return;
+            }
+            view.setStatus("CANCELLED");
+            view.setVersion(version);
+            view.addTimelineEntry(event.getCancelledAt(), "CANCELLED");
+            repo.save(view);
+            log.info("Saved OrderView (CANCELLED): orderId={}", orderId);
+        }, () -> log.warn("OrderCancelled for unknown orderId={} (no view yet)", orderId));
+    }
+
+    void onCancelledRefunded(DomainEventEnvelope<OrderCancelledRefunded> de) {
+        OrderCancelledRefunded event   = de.getEvent();
+        String                 orderId = de.getAggregateId();
+        long                   version = event.getVersion();
+
+        log.info("Projecting OrderCancelledRefunded: orderId={}, version={}", orderId, version);
+
+        repo.findById(orderId).ifPresentOrElse(view -> {
+            if (version <= view.getVersion()) {
+                log.info("Skipping stale OrderCancelledRefunded: orderId={}, incoming={}, current={}",
+                        orderId, version, view.getVersion());
+                return;
+            }
+            view.setStatus("CANCELLED_REFUNDED");
+            view.setVersion(version);
+            view.addTimelineEntry(event.getCancelledAt(), "CANCELLED_REFUNDED");
+            repo.save(view);
+            log.info("Saved OrderView (CANCELLED_REFUNDED): orderId={}", orderId);
+        }, () -> log.warn("OrderCancelledRefunded for unknown orderId={} (no view yet)", orderId));
+    }
+
+    void onFailed(DomainEventEnvelope<OrderFailed> de) {
         OrderFailed event   = de.getEvent();
         String      orderId = de.getAggregateId();
         long        version = event.getVersion();

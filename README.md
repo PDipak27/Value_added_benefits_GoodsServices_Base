@@ -1,8 +1,8 @@
 # VA-BAGS — Value Added Benefits (Goods & Services)
 
 A telecom **Value-Added-Services (VAS)** backend that lets a subscriber browse
-benefit offers (OTT subscriptions, accessories, priority repair slots) and place
-an order that is fulfilled across several services. It is a portfolio-grade
+benefit offers (digital OTT subscriptions, physical accessories, software-license
+keys) and place an order that is fulfilled across several services. It is a portfolio-grade
 reconstruction of a real telecom VAS platform, built to demonstrate three
 patterns working together end-to-end:
 
@@ -10,8 +10,17 @@ patterns working together end-to-end:
   outbox) from the read side (MongoDB projections served by a dedicated query
   API), with a read-your-writes fallback so reads stay correct during projection lag.
 - **Saga orchestration** — placing an order runs a multi-step distributed
-  transaction (reserve inventory → confirm order) with LIFO compensation on
-  failure, coordinated by one orchestrator.
+  transaction coordinated by one orchestrator, with LIFO compensation up to a
+  payment pivot and forward-only recovery after it. A single linear saga carries
+  **two payment-method flows** selected by predicate (DD-23): `PAY_NOW`
+  (reserve → authorize → commit → **capture** → confirm → fulfil → complete) and
+  `BILL_TO_MOBILE` (checkLimit → allocate → **appendLedger** → confirm → fulfil →
+  complete). The **charge is the pivot** (capture / appendLedger) and the order is
+  `CONFIRMED` immediately after it (DD-26): steps before it roll back LIFO to `FAILED`
+  on decline, steps after it are forward-only. A non-transient fulfil failure (or a
+  late user cancel) doesn't roll back — it **forward-recovers** (refund/reverseLedger →
+  release → terminal `CANCELLED_REFUNDED`). A single `fulfil` step dispatches by
+  product type inside a dedicated fulfilment-service (Design/09).
 - **Transactional outbox + event log** — the Order aggregate is stored as ordinary
   state; domain events are written to a Postgres outbox in the same transaction and
   relayed to Kafka, which serves as the durable, replayable event log (analytics,
@@ -25,7 +34,7 @@ patterns working together end-to-end:
 
 ```
 client ──HTTP──▶ API Gateway ──▶ Order Service ──saga commands──▶ Inventory Service
-                                   │  (CQRS + Saga)                 Billing Stub
+                                   │  (CQRS + Saga)                 Billing Service
                                    │                                Notification
                                    ▼
                   Postgres (order state + outbox + saga + idempotency)
@@ -54,10 +63,11 @@ projector consumes from Kafka and materializes the read model in MongoDB.
 | **api-gateway** | TLS, JWT validation, routing, OIDC provider endpoints. Owns no domain data. |
 | **catalog-service** | Offer definitions, price snapshots, eligibility rules. Stored in MongoDB — polymorphic, often-changing offer documents (DD-16). Read/admin API; reads served by a two-tier cache — Caffeine L1 + Redis L2 with a Redis pub/sub L1-invalidation broadcast (evict-on-write + TTL, DD-17/DD-18/DD-19). Fail-open: a Redis outage degrades to Mongo, never an error (DD-20). |
 | **order-service** *(depth service)* | State-stored Order aggregate + outbox, `PlaceOrderSaga` orchestration, MongoDB projections, idempotency, read API. Single deployable, three internal packages (`command` / `saga` / `query`). |
-| **inventory-service** | Saga participant. Reserves/commits/releases three inventory types: `PHYSICAL`, `SLOT`, `LICENSE`. |
-| **billing-stub-service** | Saga participant. Simulated `Authorize`/`Capture`/`Refund` over a real network boundary. |
-| **notification-service** | Pure event-driven consumer (`OrderConfirmed`, `OrderFailed`, …). No inbound commands. |
-| **shared-events** | Versioned event/command DTOs shared across services. |
+| **inventory-service** | Saga participant. All three product types are now **finite** (DD-23): `PHYSICAL_GOOD` (a stock count), `SOFTWARE_LICENSE` (a pool of individual activation keys), and `DIGITAL_SUBSCRIPTION` (a seeded count). Holds have a lifecycle — `reserve`→`commit` (PAY_NOW two-phase) or `allocate` (BILL_TO_MOBILE one-step), with `release` and a scheduled sweeper that auto-releases expired PAY_NOW holds. |
+| **fulfilment-service** | Saga participant. One `FulfilOrderCommand` dispatched internally by product type: physical → create a shipment (tracking ref), digital → provision an OTT entitlement (external ref), license → record the allocated activation key. Cancel compensation undoes it. (Design/09) |
+| **billing-service** | Saga participant, two flows (DD-23). `PAY_NOW`: simulated `Authorize`/`Capture`/`Refund` over a real network boundary. `BILL_TO_MOBILE`: a per-subscriber postpaid account (`checkAccountLimit`) plus a next-cycle ledger (`appendToLedger` / `reverseLedger`). |
+| **notification-service** | Pure event-driven consumer (`OrderConfirmed`, `OrderCompleted`, `OrderFailed`, …). Lean confirmation copy; product-type-aware completion copy that names the delivered artifact. No inbound commands. |
+| **shared-events** | Versioned event/command DTOs shared across services (incl. the shared `ProductType` vocabulary). |
 
 ## Tech stack
 
@@ -88,7 +98,8 @@ vabags_base/
 ├── catalog-service/
 ├── order-service/          # CQRS + Saga + outbox (the depth service)
 ├── inventory-service/
-├── billing-stub-service/
+├── billing-service/
+├── fulfilment-service/     # saga participant: per-product-type fulfilment
 ├── notification-service/
 └── deploy/
     ├── postgres-init/      # Eventuate schema SQL
@@ -112,14 +123,15 @@ mvn clean install -DskipTests
 
 # 4. Run the services (separate terminals — see deploy/README.md for the full table)
 cd order-service         && mvn spring-boot:run   # :8081  command + saga + query
-cd inventory-service     && mvn spring-boot:run   # :8082  saga: reserve/commit/release
-cd billing-stub-service  && mvn spring-boot:run   # :8083  saga: authorize/capture/refund
-cd notification-service  && mvn spring-boot:run   # :8084  reacts to OrderConfirmed/Failed
+cd inventory-service     && mvn spring-boot:run   # :8082  saga: reserve/commit/allocate/release
+cd billing-service       && mvn spring-boot:run   # :8083  saga: PAY_NOW auth/capture + BILL_TO_MOBILE limit/ledger
+cd notification-service  && mvn spring-boot:run   # :8084  reacts to OrderConfirmed/Completed/Failed
 cd catalog-service       && mvn spring-boot:run   # :8085  offer browse + eligibility
+cd fulfilment-service    && mvn spring-boot:run   # :8086  saga: fulfil/cancel per product type
 cd api-gateway           && mvn spring-boot:run   # :8080  routes to catalog + order
 ```
 
-> **Minimal happy-path saga** needs only order + inventory + billing (8081–8083).
+> **Minimal happy-path saga** needs order + inventory + billing + fulfilment (8081–8083, 8086).
 > The gateway (8080) is the single front door: `/v1/offers/**` → catalog,
 > `/v1/orders/**` and `/v1/entitlements/**` → order-service. JWT validation and
 > the OIDC provider endpoints are deferred to a later iteration.
@@ -128,12 +140,12 @@ Place an order and check its status:
 
 ```bash
 curl -s -X POST http://localhost:8081/v1/orders -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
-  -d '{"subscriberId":"sub_test_001","offerCode":"OTT_NETFLIX_6M",
-       "priceSnapshotId":"ps_test_001","amount":599,"currency":"INR",
+  -d '{"subscriberId":"sub_test_001","offerCode":"OTT_NETFLIX_6M","productType":"DIGITAL_SUBSCRIPTION",
+       "priceSnapshotId":"ps_2026_05_netflix6m","amount":599,"currency":"INR",
        "billingMode":"BILL_TO_MOBILE"}'
 # → 202 Accepted, {"orderId":"ord_..."}
 
-curl -s http://localhost:8081/v1/orders/<orderId>   # → status: CONFIRMED
+curl -s http://localhost:8081/v1/orders/<orderId>   # → status: CONFIRMED, then COMPLETED once fulfilled
 ```
 
 > **If the read model stays empty / order is stuck at `PLACED`:** CDC is almost
@@ -153,4 +165,5 @@ Full design lives in [`Design/`](Design/):
 | 06 | [06-ott-auth.md](Design/06-ott-auth.md) | OTT OIDC auth & provisioning |
 | 07 | [07-infra-and-stack.md](Design/07-infra-and-stack.md) | Infra & stack, docker-compose services, repo layout |
 | 08 | [08-design-decisions.md](Design/08-design-decisions.md) | Design decisions (ADR-style) |
+| 09 | [09-product-types-redesign.md](Design/09-product-types-redesign.md) | Product-types redesign — three product types, fulfilment-service (RFC; partly superseded by DD-23) |
 | — | [diagrams.mmd](Design/diagrams.mmd) | All Mermaid diagrams (paste into mermaid.live) |

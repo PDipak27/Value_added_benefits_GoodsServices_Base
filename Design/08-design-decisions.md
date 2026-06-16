@@ -43,7 +43,7 @@ Format: each decision records the problem, the options considered, the choice ma
 
 **Choice:** B
 
-**Rationale:** Three services, branching flows per benefit type (physical vs slot vs digital), and LIFO compensation logic. Choreography's "where did this order get stuck?" question becomes unanswerable at runtime. Orchestration gives one place for visibility, one place for compensation logic, and one place for timeout/retry policy. Choreography is elegant for 2-step pipelines.
+**Rationale:** Three services, a conditional reserve + single fulfil step that vary by product type (DD-22), and LIFO compensation logic. Choreography's "where did this order get stuck?" question becomes unanswerable at runtime. Orchestration gives one place for visibility, one place for compensation logic, and one place for timeout/retry policy. Choreography is elegant for 2-step pipelines.
 
 ---
 
@@ -240,7 +240,7 @@ The "polling is a bottleneck" critique is rejected at this volume: ~50 TPS is a 
 
 ## DD-16 — Catalog persisted in MongoDB (document model), not Postgres
 
-**Problem:** The Catalog owns offer definitions, price snapshots, and eligibility rules across heterogeneous categories (DIGITAL / PHYSICAL / SLOT). The offer *shape* and its eligibility dimensions change often. Modelled relationally (the original `catalog.offers` table), this becomes a wide table of mostly-null columns — `max_device_age_months` only applies to PHYSICAL, etc. — and every new attribute or eligibility dimension is a DDL migration.
+**Problem:** The Catalog owns offer definitions, price snapshots, and eligibility rules across heterogeneous product types (`PHYSICAL_GOOD` / `DIGITAL_SUBSCRIPTION` / `SOFTWARE_LICENSE`, see DD-22). The offer *shape* and its eligibility dimensions change often. Modelled relationally (the original `catalog.offers` table), this becomes a wide table of mostly-null columns — `max_device_age_months` only applies to `PHYSICAL_GOOD`, etc. — and every new attribute or eligibility dimension is a DDL migration.
 
 **Options:**
 - A) Keep the relational `catalog.offers` table (JPA + Flyway on the shared Postgres).
@@ -367,3 +367,217 @@ The trade-off is **bounded staleness, not lost data**: during a Redis outage a p
 **What this changes:**
 - **Added (in `catalog-service`):** `LoggingCacheErrorHandler` (`CacheErrorHandler` — log + swallow for get/put/evict/clear); `CacheConfig` now implements `CachingConfigurer` and registers it via `errorHandler()`. `TwoLevelCache.put` reordered to L1-then-L2. `spring.data.redis.timeout`/`connect-timeout: 500ms` in `application.yml`.
 - **Unchanged:** cache names, TTLs, annotations, L2 serialization, and the DD-17/18/19 invalidation semantics — DD-20 only changes *what happens when the cache backend errors*, not the happy path.
+
+---
+
+## DD-21 — Inventory owns the offerCode→type mapping; reserve is type-agnostic  ⚠️ SUPERSEDED in part by DD-22
+
+**Problem:** The walking skeleton supported only `LICENSE` inventory and the saga hard-coded `new ReserveInventoryCommand("LICENSE", offerCode, 1)`. To support `PHYSICAL` and `SLOT` too, *something* must know which type an offer uses. Putting that in the orchestrator means the order service has to learn each offer's storage type (a sync catalog call, or a duplicated mapping) — coupling the saga to a physical detail it has no business knowing. Separately, the V1 `release` was a no-op (reservations weren't recorded), so compensation never actually returned stock.
+
+**The key observation:** inventory *is* the authority on how an offer is stocked. The orchestrator only needs to say "reserve 1 unit of `offerCode`"; how that unit is held (a seat, a stock count, a slot) is inventory's concern. Making the command type-agnostic removes the coupling entirely and makes "three types behind one contract" literally true.
+
+**Options:**
+- A) **Orchestrator dictates type** (status quo) — order service resolves `category → type` (via catalog call or local map) and sends it in the command. Couples order to inventory internals.
+- B) **Inventory resolves type from the stored item.** Command carries only `(offerCode, quantity)`; inventory looks up the `InventoryItem`, dispatches by its stored type, and returns the resolved type in the reply for observability.
+
+**Choice:** **B**
+
+**Rationale:** Loose coupling and single ownership — the saga is unchanged when a new inventory type is added; only inventory's seed/handler grows. All three types share one uniform `total`/`reserved` model, so reserve/release is one code path; the type only flavours the failure reason (`POOL_EXHAUSTED` / `OUT_OF_STOCK` / `NO_SLOTS_AVAILABLE`). The reserve reply still surfaces the resolved type so the saga/order can record it.
+
+**Reservation ledger (fixes the no-op release):** a successful reserve writes a `reservations` row (`reservationId → offerCode, quantity`). Release looks it up, returns the units to the item, and sets a `released` flag — so compensation is correct *and* idempotent under redelivery; an unknown `reservationId` (reserve never succeeded) is a successful no-op.
+
+**What this changes:**
+- **shared-events:** `ReserveInventoryCommand` is now `(offerCode, quantity)` — `inventoryType`/`resourceRef` dropped. `InventoryReserved` gains the resolved `inventoryType`.
+- **inventory-service:** `LicensePool` → generalised `InventoryItem` (`type`, `serviceCenter`, `total`, `reserved`) + a `Reservation` entity and repo; handler dispatches by stored type and release returns stock. Flyway `V2__inventory_items.sql` creates the two tables, seeds 7 items (3 LICENSE, 2 PHYSICAL, 2 SLOT), and drops `license_pools`.
+- **order-service:** saga sends the type-agnostic reserve; `PlaceOrderSagaData` records the resolved `inventoryType`.
+- **catalog:** `CatalogSeeder` expanded to 8 offers (7 active + 1 withdrawn) matching the inventory seed 1:1.
+
+---
+
+## DD-22 — Three product types with a dedicated fulfilment-service  *(supersedes the DIGITAL/PHYSICAL/SLOT taxonomy; revises DD-21)*
+
+**Problem:** The walking skeleton's inventory taxonomy (`LICENSE` / `PHYSICAL` / `SLOT`,
+plus a `serviceCenter` for slots) conflated *how an item is stocked* with *what the
+order actually is*, and it had no place to put fulfilment: provisioning an OTT
+entitlement, shipping an accessory, and handing over a license key are genuinely
+different post-payment actions, but the saga had no fulfil step at all (it confirmed
+straight after capture). Adding them per-type would grow the orchestrator a branch per
+type. Separately, `SLOT` (priority-repair booking) was never built out and carried
+dead columns.
+
+**The key observation:** a benefit has a **product type** that determines three things
+at once — whether it is *finite* (needs inventory), *how it is fulfilled* (the artifact),
+and *what the confirmation says*. Naming that vocabulary once (`ProductType`) and letting
+each participant dispatch on it keeps the saga a single linear orchestrator while the
+type-specific behaviour lives at the edges.
+
+**Options:**
+- A) Keep `LICENSE/PHYSICAL/SLOT`, fold fulfilment into existing participants (inventory provisions, billing confirms) — overloads bounded contexts; no audit record for fulfilment.
+- B) **Three product types** (`PHYSICAL_GOOD` / `DIGITAL_SUBSCRIPTION` / `SOFTWARE_LICENSE`) + a **dedicated fulfilment-service** that the saga calls with **one** `fulfil` command, dispatching by type internally.
+- C) A fulfilment step per product type in the saga — explicit, but the orchestrator grows with the catalog.
+
+**Choice:** **B**
+
+**Rationale:**
+- **One linear saga, no per-type branches.** `reserve → authorize → fulfil → capture → confirm`. Two mechanisms make it type-agnostic: (1) a **conditional reserve** — `DIGITAL_SUBSCRIPTION` is infinite, so step 1 (and its compensation) is *skipped* via a `productType` predicate; (2) a **single fulfil step** — one `fulfilment.Fulfil.v1` command goes to fulfilment-service, which routes by type. A new product type changes a *participant*, never the orchestrator.
+- **Fulfilment is its own bounded context.** It owns the post-payment artifact and the audit record (`fulfilment.fulfilments`, the handle the cancel compensation acts on): `PHYSICAL_GOOD` → shipment (`trackingRef`), `DIGITAL_SUBSCRIPTION` → OTT entitlement (`externalRef`), `SOFTWARE_LICENSE` → echo the key inventory allocated at reserve (`activationKey`). Delivery is an internal stub, **not** a separate service (Design/09, Q2(ii)).
+- **Billing ordering keeps compensation simple.** Fulfil sits between authorize and capture, so a fulfilment failure is pre-capture → **no refund** — compensation only cancels fulfilment and releases inventory (strict LIFO).
+- **`SLOT` is removed entirely** — taxonomy, `serviceCenter` column, and the `NO_SLOTS_AVAILABLE` reason all go.
+
+**Revises DD-21, does not contradict it:** the type-agnostic reserve contract `(offerCode, quantity)` and inventory-owns-the-mapping principle **stand**. What changes is the vocabulary (`LICENSE/PHYSICAL/SLOT` → the three product types) and that `SOFTWARE_LICENSE` reserve now allocates a **concrete key** (returned as `activationKey` on `InventoryReserved`) from a finite `license_keys` pool, rather than just decrementing an opaque count. `DIGITAL_SUBSCRIPTION` drops out of inventory altogether.
+
+**Client sends `productType`, order verifies it (fail-open).** The place-order request
+carries `productType`; `OrderCommandService` calls catalog to resolve the authoritative
+value and **prefers the catalog** when reachable, logging a mismatch; on any catalog
+failure it falls back to the client-sent value (same fail-open posture as DD-20). The
+resolved type is stamped on the order, the `OrderPlaced` event, and the saga data.
+
+**What this changes:**
+- **shared-events:** new `ProductType` enum (the shared vocabulary); `OrderPlaced`/`OrderConfirmed` carry `productType` + the resolved artifact; `InventoryReserved` carries `productType` + optional `activationKey`; new `FulfilOrderCommand`/`OrderFulfilled`/`OrderFulfilmentFailed`/`CancelFulfilmentCommand`.
+- **catalog:** `category` String → `ProductType` enum on `Offer`; seed re-keyed to the three types (3 digital, 2 license, 2 physical, +1 withdrawn).
+- **inventory:** drop `SLOT`/`serviceCenter`; add a `license_keys` pool (FREE→ALLOCATED under a pessimistic lock) and a `licenseKey` on the reservation ledger; `V3__product_types.sql` rebuilds the tables and seeds keys.
+- **order:** `productType` on the command/entity/request; `CatalogClient` verification; saga gains the conditional reserve + the fulfil/cancel steps; read model carries `productType` + a `fulfilment` sub-document.
+- **fulfilment-service:** new module (port 8086) — `FulfilmentCommandHandlers` (dispatch by type), `FulfilmentRecord` entity, `V1__fulfilment_schema.sql`. **Infra-only** in docker-compose; runs locally like the other services.
+- **notification:** per-product-type confirmation copy keyed off `productType` + the artifact.
+
+## DD-23 — Payment-method-driven order flows: PAY_NOW (reserve→commit) vs BILL_TO_MOBILE (allocate→ledger)  *(revises DD-22; supersedes DD-22's "DIGITAL is infinite" and "confirm after capture")*
+
+**Problem:** DD-22 had one billing shape (authorize→capture) and treated
+`DIGITAL_SUBSCRIPTION` as infinite (reserve skipped). But the product carries two
+genuinely different *payment methods* with different control flow: **PAY_NOW**
+(check stock, hold it ~10 min, authorize a card, capture on delivery) and
+**BILL_TO_MOBILE** (verify the postpaid account, take stock firmly, append the cost
+to the next bill, confirm instantly — no card, no capture). Folding both into the
+old single shape would either over-charge BILL_TO_MOBILE up front or leave PAY_NOW
+without a temporary hold. Separately, "digital is infinite" was a simplification we
+chose to drop: digital offers now have a real finite count like everything else.
+
+**The key observation:** the two methods differ only in *which* participants run and
+*when* money moves — they share fulfilment and the terminal artifact. So model them
+as **conditional steps inside one linear saga** (predicate on `billingMode`), not two
+sagas. The shared inventory ledger gains a lifecycle (`RESERVED → ALLOCATED → RELEASED`)
+so both a two-phase hold (PAY_NOW) and a one-step firm take (BILL_TO_MOBILE) write to
+the same `available = total − reserved − allocated` invariant.
+
+**Options:**
+- A) Two separate sagas (one per method) — duplicates fulfil/confirm/complete and the read-model wiring.
+- B) **One linear saga, conditional steps keyed on `billingMode`**, with a shared inventory lifecycle and a payment pivot placed so that everything *after* confirmation is forward-only.
+- C) Branch the orchestrator (if/else sub-flows) — the saga grows a structural branch per method; harder to reason about the pivot.
+
+**Choice:** **B**
+
+**Rationale:**
+- **One saga, two flows by predicate.** Steps carry an `isPayNow`/`isBillToMobile` predicate and are skipped when it is false:
+  - `PAY_NOW`:        reserve → authorize → commit → **confirm** → capture → fulfil → complete  *(capture-before-fulfil revised by DD-24)*
+  - `BILL_TO_MOBILE`: checkLimit → allocate → appendLedger → **confirm** → fulfil → complete
+- **Pivot = the static last compensatable step (`appendLedger`).** Everything up to and including the pivot can compensate in reverse (release inventory, reverse ledger); everything after — confirm, capture, fulfil, complete — is **forward-only** (retried, never rolled back). This is why `confirm` moved *before* fulfil: once an order is publicly CONFIRMED we must never un-confirm it, so confirmation has to sit on the forward-only side of the pivot. PAY_NOW's `authorize`/`commit` and BILL_TO_MOBILE's `checkLimit` are deliberately non-compensating but pre-pivot, so a later pre-pivot failure still unwinds the inventory hold.
+- **Capture happens after confirm, before fulfil (PAY_NOW) — see DD-24.** Authorization happens early (fail fast, release the hold on decline); capture runs post-pivot but *before* the irreversible fulfilment artifact ships. *(DD-23 originally placed capture last; DD-24 moved it ahead of fulfil so a capture decline never leaves a delivered-but-uncharged order.)*
+- **Digital is now finite.** `DIGITAL_SUBSCRIPTION` gets inventory rows (seeded `OTT_*`, count 100); reserve/allocate run for all three types. A withdrawn offer (`OTT_LEGACY_3M`) is intentionally *not* seeded, so ordering it still yields `ITEM_NOT_FOUND`.
+- **Two order states, two events.** `CONFIRMED` becomes an *intermediate* milestone (inventory settled, payment authorized/billed); `COMPLETED` is the terminal success after fulfilment (+ PAY_NOW capture). The delivery artifact now ships on `OrderCompleted`, because it isn't known until fulfilment runs.
+
+**Reservation expiry (PAY_NOW hold):** a reserve writes `reserved_until = now + 10 min`.
+A `@Scheduled` sweeper in inventory-service auto-releases still-`RESERVED` rows past
+their expiry (payment never committed), via the same idempotent `releaseById` the saga
+compensation uses — so a late commit/release races safely. (Chosen over a delay-queue:
+a periodic sweep is the smallest mechanism that needs no extra infra.)
+
+**Account model (BILL_TO_MOBILE):** billing-service owns a per-subscriber `billing_account`
+(`status`, `planTier`, `creditLimit`). `checkAccountLimit` is a **per-order** gate —
+admit when the account is ACTIVE and `amount ≤ creditLimit` (default 1000); no cumulative
+balance gating, so stock/pool-exhaustion tests still reach inventory. Unknown subscribers
+are **auto-provisioned** ACTIVE/BASIC/1000 on first check. The charge is parked on
+`next_cycle_ledger` (PENDING) by `appendToLedger` and flipped to REVERSED (idempotent) by
+the compensation.
+
+**billing-stub-service → billing-service.** With real account state and a next-cycle ledger
+it is no longer a pure stub; renamed (module dir, artifactId, application class). The
+PAY_NOW authorize/capture/refund handlers and the `amount > 999` demo decline rule stay.
+
+**What this changes:**
+- **shared-events:** new `CommitInventoryCommand`/`InventoryCommitted`/`InventoryCommitFailed`, `AllocateInventoryCommand`/`InventoryAllocated`/`InventoryAllocationFailed`; `InventoryReserved` gains `reservedUntil`; billing `CheckAccountLimitCommand`/`AccountLimitOk`/`AccountLimitExceeded`, `AppendToLedgerCommand`/`LedgerAppended`, `ReverseLedgerCommand`/`LedgerReversed`; new terminal `OrderCompleted` (carries the artifact); `OrderConfirmed` slimmed to `(confirmedAt, version, productType)`.
+- **inventory:** `inventory_items` gains `allocated` (invariant `reserved + allocated ≤ total`); reservations gain a `status` lifecycle + `reserved_until` (folding away the old `released` boolean); reserve/commit/allocate/release handlers + an `InventoryReservationSweeper`; `V4__payment_modes.sql` (also seeds finite `OTT_*`).
+- **billing-service:** `BillingAccount` + `NextCycleLedgerEntry` entities/repos, `V2__accounts_and_next_cycle.sql`; `checkAccountLimit`/`appendToLedger`/`reverseLedger` handlers.
+- **order:** saga rewritten to the 10-step conditional flow with predicates; `OrderStatus.COMPLETED`; `Order.complete()` + `completed_at` (`V3__order_completed_at.sql`); `OrderCommandService.completeOrder()` and a slimmed `confirmOrder`; `PlaceOrderSagaData` gains `ledgerEntryId`; read model gains `completedAt` and sets the `fulfilment` sub-document on completion (not confirmation).
+- **notification:** confirmation copy is now lean (intermediate, no artifact); the per-product-type artifact copy moves to a new `ORDER_COMPLETED` notification.
+
+---
+
+## DD-24 — PAY_NOW captures *before* fulfil; a hard capture decline parks the order in `CAPTURE_FAILED`  *(revises DD-23's step ordering)*
+
+**Problem:** DD-23 ran PAY_NOW as `… confirm → fulfil → capture → complete` — capture *after* fulfilment. For an irreversible artifact (a `SOFTWARE_LICENSE` activation key, a `DIGITAL_SUBSCRIPTION` OTT entitlement) that ordering is wrong: if capture then fails, the subscriber has *already received* the benefit but was never charged, and there is no clean undo. Both capture and fulfil sit **after the pivot** (forward-only, no compensation), so the order they run in decides which side eats the residual risk.
+
+**Choice:** Reorder PAY_NOW to **`reserve → authorize → commit → confirm → capture → fulfil → complete`** — take the money first, deliver the (un-takebackable) artifact second.
+
+**Capture outcome handling (post-pivot, no rollback):**
+- **Success** (`BillingCaptured`) → proceed to fulfil → complete, as before.
+- **Hard decline** (e.g. bank refuses settlement) → the participant replies with a **success-outcome `BillingCaptureFailed`** (deliberately *not* `withFailure`, which would trigger Eventuate's forward-retry of a step that will never succeed). The saga sets a `captureFailed` flag, drives a local transition to **`CAPTURE_FAILED`**, and **skips fulfil + complete** via predicate. The order is *not* `FAILED` — nothing rolls back; inventory stays committed, the charge is unsettled, and the order is parked for back-office reconciliation.
+- **Transient/technical error** (no reply, timeout, 5xx) → the handler returns `withFailure(...)`, and Eventuate **retries the capture step forward** until it resolves to one of the two outcomes above. ("Retry transient, hold on hard decline.")
+
+**Why a success-outcome reply for a decline?** In Eventuate a *failure*-outcome reply after the pivot has only one meaning — "retry forward" (compensation is unavailable). A hard decline must instead **branch** to a hold state without retrying and without compensating. Modelling it as a distinct **success-outcome** reply type lets the saga record the decline, flip a flag in saga data, and predicate the remaining steps off — all on the forward-only path. This is the idiomatic way to express "post-pivot business branch" in the Tram simple-DSL.
+
+**Notifications (DD-24):** `OrderCaptureFailed` (a new order domain event) drives **two** notices — a **subscriber** SMS ("we couldn't take payment; your benefit is on hold — check your card/account") and a **back-office** EMAIL reconciliation alert ("capture failed; inventory committed, fulfilment held; resolve: retry capture → fulfil, or cancel → release").
+
+**Scope — hold + notify only.** This task implements the hold and the two notifications. The **resolution path is deferred** (documented, not built): a back-office action would either *retry capture → fulfil → complete*, or *cancel → release the committed inventory → FAILED*. CAPTURE_FAILED is therefore a terminal state *for the saga* but an actionable, non-final state operationally.
+
+**Residual risk (acknowledged tradeoff):** capture-before-fulfil flips the exposure from "delivered but uncharged" (irreversible, the worse case) to "charged but fulfilment fails" (recoverable — a fulfilment failure post-capture can refund or retry). We accept the lesser evil: money is reversible, a leaked license key / live OTT entitlement is not.
+
+**Demo trigger:** a PAY_NOW capture amount of **777** hard-declines (`CAPTURE_DECLINED`); any other in-limit amount (≤ 999, the authorize ceiling) captures normally.
+
+**What this changes:**
+- **shared-events:** new billing reply `BillingCaptureFailed(reason, detail)`; new order event `OrderCaptureFailed(captureFailedAt, version, productType, reason)`.
+- **billing-service:** `capture(...)` gains the hard-decline branch (`amount == 777` → `withSuccess(BillingCaptureFailed)`); transient errors documented to use `withFailure`.
+- **order-service:** saga steps reordered to capture→fulfil with a `captureFailed` saga-data flag gating fulfil (predicate) and complete (guard); `captureBillingEndpoint` registers the `BillingCaptureFailed` reply; new `OrderStatus.CAPTURE_FAILED`; `Order.captureFailed(reason)`; `OrderCommandService.captureFailed(...)` publishes `OrderCaptureFailed`; projector handles the new event/status.
+- **notification:** new `ORDER_CAPTURE_FAILED` (subscriber, SMS) and `BACKOFFICE_CAPTURE_FAILED` (ops, EMAIL) types + templates; consumer subscribes to `OrderCaptureFailed` and emits both.
+- **BILL_TO_MOBILE is unchanged** — it has no capture step; its charge is the pre-confirm `appendLedger`, which is the pivot and already compensatable.
+
+---
+
+## DD-25 — Unit tests are pure JUnit 5 + Mockito + AssertJ; no Spring context, containers, or embedded infra
+
+**Problem:** The services lean on heavy collaborators — Postgres + JPA, MongoDB, Kafka, Redis, and the Eventuate Tram/Saga runtime. The test suite has to verify the logic that actually carries risk (domain state transitions, saga command-handler outcomes, the read-model projector's out-of-order guard, cache tiering, eligibility and routing rules) without that verification turning into a slow, flaky integration harness.
+
+**Options:**
+- A) **`@SpringBootTest` + Testcontainers / embedded Postgres / embedded Kafka / real Redis** — exercises the wiring end-to-end, but each test boots a context and external processes: slow, Docker-dependent, order-sensitive, and it tests the framework as much as our code.
+- B) **Pure unit tests — JUnit 5 + Mockito + AssertJ, every collaborator mocked**, no Spring context anywhere.
+- C) A mix, with slice tests (`@DataJpaTest`, `@WebMvcTest`) for the persistence/web edges.
+
+**Choice:** **B**
+
+**Rationale:** The behaviour worth protecting is *ours*, and almost all of it is plain Java reachable without a container: aggregates (`Order`, `BillingAccount`, `InventoryItem`, …), command handlers whose contract is a Tram reply `Message`, the `OrderProjector`, the two-level cache, and the notification templates/router. Mocking the repositories, publishers, `SagaInstanceFactory`, and dispatchers lets each test assert one rule deterministically in milliseconds, with no Docker and no boot time — so the suite runs anywhere and stays green for the right reasons. JUnit 5 + Mockito + AssertJ are already on the classpath via `spring-boot-starter-test`, so this adds no dependencies.
+
+**Conventions kept honest:**
+- **Collaborators are mocked; pure logic is real.** The Eventuate `CommandMessage`/`DomainEventEnvelope` are stubbed, repositories/publishers mocked, and `ArgumentCaptor` asserts the persisted side-effects. Where a real object is *cheaper and more truthful* than a mock it stays real — a Caffeine L1 in `TwoLevelCacheTest`, the real `NotificationTemplates`/`NotificationRouter` in the consumer test — so the assertion sees the actual rendered body / chosen tier.
+- **Command-handler outcomes are asserted against the real Tram reply contract** (`REPLY_OUTCOME` header + JSON payload via `JSonMapper`), not a paraphrase — including the DD-24 "success-outcome `BillingCaptureFailed`" branch.
+- **One behaviour-neutral seam:** `OrderProjector`'s handlers are package-private (not `private`) so the projection logic is unit-testable directly; they remain wired only through `domainEventHandlers()`.
+- **Integration/E2E is out of scope here** — happy-path wiring is validated by running the compose stack, not by the unit suite.
+
+---
+
+## DD-26 — Capture is the pivot; non-transient post-pivot failures forward-recover to `CANCELLED_REFUNDED`; user cancel is cooperative  *(revises DD-23/DD-24; retires `CAPTURE_FAILED`)*
+
+**Problem:** DD-24 parked a hard capture decline in a holding state (`CAPTURE_FAILED`) for manual reconciliation, and modelled it as a *success-outcome* reply on the assumption that a post-pivot *failure*-outcome reply would make Eventuate **retry the step forward**. Re-reading the Eventuate Tram Sagas `simple-dsl` (0.26.0) source disproved that assumption: **there is no automatic retry.** A `withFailure` reply (when not already compensating) always calls `startCompensating()` and walks backward running compensations; a `withFailure` while compensating goes to the failed end state. The "pivot" is purely conceptual — the last step that carries a compensation — and "forward-only after the pivot" is enforced **only by coding discipline** (post-pivot steps must reply `withSuccess`, never `withFailure`). This invalidates DD-24's retry rationale and leaves two real gaps: (1) a capture decline should simply *roll back* (nothing was captured, so there is nothing to hold or reconcile), and (2) there was no story for unwinding an order *after* the charge has settled (a fulfilment that genuinely cannot complete, or a user who cancels post-charge).
+
+**The model:** capture (PAY_NOW) / append-to-ledger (BILL_TO_MOBILE) is the **pivot — the go/no-go point — and the order is `CONFIRMED` immediately after it.** Everything before the pivot is compensatable and rolls back LIFO. Everything after is **forward-only**:
+- **Pre-pivot failure** (reserve/authorize/commit/checkLimit/allocate decline, or a capture decline) → `withFailure` → Eventuate compensates the holds → terminal **`FAILED`**. A capture decline is the pivot *failing to commit*: nothing was captured, so there is no charge to refund — it is an ordinary rollback. (`CAPTURE_FAILED` and `OrderCaptureFailed` are **retired**.)
+- **Non-transient post-pivot failure** (fulfilment cannot complete — route closed, damaged good, unknown type, missing key) → the participant replies with a **success-outcome `OrderFulfilmentFailed`** that flips the saga onto **forward-recovery**: it does *not* roll back. Instead it moves *forward* through **refund** (PAY_NOW) / **reverse-ledger** (BILL_TO_MOBILE) → **release inventory** → terminal **`CANCELLED_REFUNDED`**. This is the textbook "the pivot already committed, so unwind by moving forward, not backward."
+
+**User-initiated cancel — cooperative, best-effort (`POST /v1/orders/{id}/cancel`):** the endpoint does not abort the saga (it cannot reach into a running instance). It **flags the order** (`cancel_requested`) and returns **202**; the saga resolves the outcome at one of two **local checkpoints**:
+- **Pre-pivot checkpoint** (after the holds, before capture/appendLedger): a pending flag → mark **`CANCELLED`** + `throw` a `SagaRollback` so Eventuate compensates the holds. Nothing was charged.
+- **Pre-fulfil checkpoint** (post-pivot, before fulfil): a pending flag → flip onto **forward-recovery** (refund/reverse + release → `CANCELLED_REFUNDED`) — the same path as a fulfilment failure.
+- **After fulfilment / once `COMPLETED`:** the API **refuses cancel with 409** (`Order.requestCancel()` throws once terminal). A cancel that lands *after* the pre-fulfil checkpoint passes loses the race and the order completes normally — an honest, documented window.
+
+**Why cooperative (not a control-plane abort)?** A saga instance has no externally addressable "interrupt." The minimal, race-safe mechanism is a flag the saga reads at well-defined checkpoints — it keeps the decision *inside* the orchestrator (the one place that knows whether the pivot has passed), so a cancel is always resolved on the correct side of the pivot.
+
+**Forward-recovery branch (not a separate saga):** one boolean in saga data (`forwardRecover`) plus predicates gate the unwind steps. `shouldFulfil = !forwardRecover` (skip fulfil once recovering), `shouldRefund = isPayNow && forwardRecover`, `shouldReverseLedger = isBillToMobile && forwardRecover`, `isForwardRecover` gates release; the local `finalizeOrder` step picks `cancelRefunded(...)` vs `completeOrder(...)`. Inventory `releaseById` already tolerates both `RESERVED` and committed (`ALLOCATED`) state, so the same idempotent release serves both rollback-compensation and forward-recovery.
+
+**Residual-risk posture (unchanged from DD-24, now with an exit):** capture-before-fulfil still flips exposure from "delivered but uncharged" (irreversible) to "charged but fulfilment fails" (recoverable) — and DD-26 now *implements* that recovery (refund/reverse + release) instead of parking it. Money is reversible; a leaked key / live entitlement is not.
+
+**Demo triggers:** PAY_NOW capture amount **777** → hard decline → rollback to `FAILED`. An **`offerCode` containing `FAIL`** → non-transient fulfilment failure → forward-recovery → `CANCELLED_REFUNDED`.
+
+**What this changes:**
+- **shared-events:** new `OrderCancelled(cancelledAt, version, reason)` (pre-pivot) and `OrderCancelledRefunded(cancelledAt, version, reason)` (post-pivot); `OrderCaptureFailed` **removed**; `OrderFulfilmentFailed` re-documented as a success-outcome branch reply; `RefundBillingCommand` re-documented as forward-recovery (not LIFO compensation).
+- **billing-service:** `capture(777)` now replies **`withFailure(BillingCaptureFailed)`** (rollback), not a success-outcome.
+- **fulfilment-service:** non-transient failures (`UNKNOWN_PRODUCT_TYPE`, `NO_ACTIVATION_KEY`, and the new `DELIVERY_FAILED` demo trigger) reply **`withSuccess(OrderFulfilmentFailed)`** (drive forward-recovery), never `withFailure`.
+- **order-service:** `OrderStatus` drops `CAPTURE_FAILED`, adds `CANCELLED` + `CANCELLED_REFUNDED`; `Order` gains `cancel_requested`/`cancelled_at` (`V4__order_cancel.sql`), `requestCancel()` (throws once terminal), `cancel()`, `cancelRefunded()`; `OrderCommandService` gains `requestCancel`/`isCancelRequested`/`cancel`/`cancelRefunded`; `OrderCommandController` adds `POST /{id}/cancel` (202, or 409 once terminal). The saga is rewritten to a single linear flow with two cancel checkpoints, the capture pivot, and the refund/reverse/release forward-recovery tail; projector maps the two new events.
+- **notification:** the two `*_CAPTURE_FAILED` types are replaced by `ORDER_CANCELLED` and `ORDER_CANCELLED_REFUNDED` (both subscriber SMS).
+- **Eventuate semantics corrected for the record:** no auto-retry; `withFailure` ⇒ compensate; pivot/forward-only is coding discipline, not a framework feature.

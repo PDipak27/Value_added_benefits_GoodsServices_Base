@@ -25,14 +25,14 @@ import org.springframework.lang.Nullable;
  *   <li><strong>put</strong> — value simply isn't cached this time → no effect on
  *       correctness.</li>
  *   <li><strong>evict / clear</strong> — the shared L2 couldn't be cleared; the
- *       local L1 eviction already ran in {@link TwoLevelCache} and the 15s TTL is
+ *       local L1 eviction already ran in {@link TwoLevelCache} and the L1 TTL is
  *       the convergence backstop. The write itself (already committed to Mongo)
  *       still returns success.</li>
  * </ul>
  *
  * <p>The trade-off is bounded staleness, not lost data: during a Redis outage a
- * peer instance's L1 may serve up-to-15s-old offers. Acceptable for a catalog
- * that changes ≈twice a week (DD-17).
+ * peer instance's L1 may serve offers up to its L1 TTL old. Acceptable for a
+ * catalog that changes ≈twice a week (DD-17).
  */
 public class LoggingCacheErrorHandler implements CacheErrorHandler {
 

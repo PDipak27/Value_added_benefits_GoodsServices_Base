@@ -4,6 +4,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 import com.vab.inventory.command.InventoryCommandHandlers;
 
@@ -14,6 +15,7 @@ import io.eventuate.tram.spring.consumer.kafka.EventuateTramKafkaMessageConsumer
 import io.eventuate.tram.spring.messaging.producer.jdbc.TramMessageProducerJdbcConfiguration;
 
 @SpringBootApplication
+@EnableScheduling
 @Import({SagaParticipantConfiguration.class, TramMessageProducerJdbcConfiguration.class,
 			EventuateTramKafkaMessageConsumerConfiguration.class,
 			TramCommandConsumerConfiguration.class})

@@ -4,13 +4,14 @@
 
 **Value Added: Benefits (VA-BAGS)** — a telecom backend that leverages an existing subscriber base (identity, KYC, billing relationship, device IMEI) to sell adjacent goods and services billed to the mobile account.
 
-Representative catalog:
-- OTT subscriptions (Netflix, Hotstar bundles)
-- Device protection plans (requires IMEI)
-- Priority repair (slot-based, geographic)
-- Personalized tones / RBT (network-side provisioning)
-- Cloud storage / security bundles
-- Accessories (physical, bill-to-mobile)
+Representative catalog, across three **product types** (DD-22 / Design/09), all
+**finite** since DD-23:
+- **`DIGITAL_SUBSCRIPTION`** — OTT subscriptions (Netflix, Prime, Hotstar bundles); a seeded count, provisioned as an entitlement
+- **`SOFTWARE_LICENSE`** — security / productivity keys (antivirus, Microsoft 365); a finite pool of activation keys
+- **`PHYSICAL_GOOD`** — accessories (earbuds, power banks); a finite stock count, shipped
+
+Each order picks a **payment mode** (DD-23): `PAY_NOW` (card-style reserve → authorize →
+commit) or `BILL_TO_MOBILE` (postpaid check-limit → allocate → next-cycle ledger).
 
 **Scale envelope:** ~50 order TPS (writes), ~300 RPS (reads). Comfortably a single-node Postgres workload — none of CQRS/read-store/CDC is load-bearing for throughput. Each pattern is justified by *capability* (distributed transaction, strategic event log, read-shape), not scale. See DD-14.
 
@@ -28,7 +29,8 @@ flowchart LR
         CAT[Catalog & Eligibility]
         ORD[Order Service\nCQRS + Saga]
         INV[Inventory Service]
-        BIL[Billing Stub]
+        BIL[Billing Service]
+        FUL[Fulfilment Service]
         NOT[Notification Service]
     end
 
@@ -51,6 +53,7 @@ flowchart LR
     ORD <-->|events + commands| BROKER
     INV <-->|events + commands| BROKER
     BIL <-->|events + commands| BROKER
+    FUL <-->|events + commands| BROKER
     NOT <---|domain events| BROKER
     CAT <---|domain events| BROKER
 
@@ -58,7 +61,7 @@ flowchart LR
     ORD -->|Query API: primary| RSTORE
     ORD -.->|read-your-writes fallback| WSTORE
 
-    ORD -->|provisioning REST\nclient-credentials OAuth2| OTT
+    FUL -->|provisioning REST\nclient-credentials OAuth2| OTT
     OTT -->|userinfo verify| GW
 ```
 
@@ -72,8 +75,8 @@ flowchart LR
 | Gateway → Catalog (browse/eligibility) | Sync + cache | Read-only, latency-critical |
 | Gateway → Order command | Sync request → `202 Accepted` | Decouple submission ack from fulfillment |
 | Gateway → Order Query API | Sync | Fast denormalized read |
-| Order Saga ↔ Inventory / Billing | **Async Kafka** | Long-lived, retryable, participant restarts safe |
-| Order Saga → OTT provisioning | Sync REST wrapped in async Saga step | External REST contract; the Saga step itself is async |
+| Order Saga ↔ Inventory / Billing / Fulfilment | **Async Kafka** | Long-lived, retryable, participant restarts safe |
+| Fulfilment → OTT provisioning | Sync REST wrapped in the async fulfil step | External REST contract; the Saga step itself is async |
 | Domain events → Notification, Projector | **Async pub/sub** | Must never block writers |
 | Cross-service queries | **Forbidden** | Sync cross-service reads = gateway drug to distributed monolith |
 

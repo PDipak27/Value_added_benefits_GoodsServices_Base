@@ -32,6 +32,10 @@ spring:
     mongodb:
       uri: mongodb://localhost:27017/vab
 
+# ── Catalog service (best-effort productType verification at placement) ─────
+catalog:
+  base-url: http://localhost:8085
+
 # ── Eventuate Tram — outbox + dedup tables live in the 'eventuate' schema ──
 eventuate:
   database:

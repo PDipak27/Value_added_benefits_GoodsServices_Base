@@ -78,10 +78,15 @@ VA-BAGS/
         │
         ├── inventory-service/
         │   └── src/main/java/com/vab/inventory/
-        │       ├── command/          InventoryCommandHandlers (@SagaCommandHandlers)
-        │       └── domain/           LicensePool, LicensePoolRepository
+        │       ├── command/          InventoryCommandHandlers (reserve/commit/allocate/release)
+        │       ├── sweeper/          InventoryReservationSweeper (expires PAY_NOW holds)
+        │       └── domain/           InventoryItem, LicenseKey, Reservation (+ repositories)
         │
-        ├── billing-stub-service/
+        ├── billing-service/          PAY_NOW auth/capture + BILL_TO_MOBILE account/ledger (DD-23)
+        ├── fulfilment-service/       per-product-type fulfil (Design/09)
+        │   └── src/main/java/com/vab/fulfilment/
+        │       ├── command/          FulfilmentCommandHandlers (@SagaCommandHandlers)
+        │       └── domain/           FulfilmentRecord, FulfilmentRecordRepository
         ├── notification-service/
         │
         └── deploy/

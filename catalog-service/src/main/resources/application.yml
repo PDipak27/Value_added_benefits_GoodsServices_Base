@@ -19,11 +19,19 @@ spring:
     redis:
       host: localhost
       port: 6379
-      timeout: 500ms
-      connect-timeout: 500ms
+      timeout: 1000ms
+      connect-timeout: 1000ms
 
-  # Cache manager is defined in CacheConfig (Caffeine L1 + Redis L2, 15s TTL),
+  # Cache manager is defined in CacheConfig (Caffeine L1 + Redis L2),
   # so Spring Boot's cache auto-configuration backs off — no spring.cache.type.
+
+# Two-tier catalog cache TTLs (DD-17/DD-18). L1 (in-process Caffeine) is the hot
+# path; L2 (shared Redis) backstops L1 misses + bounds out-of-band staleness.
+catalog:
+  cache:
+    l1-ttl-seconds: 120
+    l2-ttl-seconds: 300
+    l1-max-size: 10000
 
 management:
   endpoints:

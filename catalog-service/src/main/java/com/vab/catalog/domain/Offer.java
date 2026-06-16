@@ -1,5 +1,6 @@
 package com.vab.catalog.domain;
 
+import com.vab.events.common.ProductType;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 
@@ -7,10 +8,12 @@ import org.springframework.data.mongodb.core.mapping.Document;
  * An offer in the catalog, with its current price snapshot and the eligibility
  * constraints a subscriber must satisfy to purchase it (DD-16).
  *
- * <p>Stored as a MongoDB document. Offers are polymorphic across categories
- * (DIGITAL / PHYSICAL / SLOT) and their eligibility dimensions evolve often, so
- * a document model lets the shape change without per-attribute schema migrations.
- * Enums are persisted as their string names by the default Mongo mapping.
+ * <p>Stored as a MongoDB document. Offers are polymorphic across product types
+ * (PHYSICAL_GOOD / DIGITAL_SUBSCRIPTION / SOFTWARE_LICENSE) and their eligibility
+ * dimensions evolve often, so a document model lets the shape change without
+ * per-attribute schema migrations. Enums are persisted as their string names by
+ * the default Mongo mapping. Catalog is the <em>authoritative</em> source of an
+ * offer's {@link ProductType} (Design/09).
  *
  * <p>Null/blank constraint fields mean "no restriction on that dimension".
  * {@code priceSnapshotId} references an immutable price snapshot by id — orders
@@ -25,8 +28,8 @@ public class Offer {
     private String name;
     private String description;
 
-    /** DIGITAL | PHYSICAL | SLOT — the inventory family this offer draws on. */
-    private String category;
+    /** The product type this offer is — drives inventory, fulfilment and display. */
+    private ProductType productType;
 
     private long   amount;
     private String currency;
@@ -47,14 +50,14 @@ public class Offer {
 
     protected Offer() {}  // Mongo mapping
 
-    public Offer(String offerCode, String name, String description, String category,
+    public Offer(String offerCode, String name, String description, ProductType productType,
                  long amount, String currency, String priceSnapshotId, OfferStatus status,
                  PlanTier minPlanTier, String allowedRegions, Integer maxDeviceAgeMonths,
                  KycLevel minKycLevel) {
         this.offerCode          = offerCode;
         this.name               = name;
         this.description        = description;
-        this.category           = category;
+        this.productType        = productType;
         this.amount             = amount;
         this.currency           = currency;
         this.priceSnapshotId    = priceSnapshotId;
@@ -74,7 +77,7 @@ public class Offer {
     public String      getOfferCode()         { return offerCode; }
     public String      getName()              { return name; }
     public String      getDescription()       { return description; }
-    public String      getCategory()          { return category; }
+    public ProductType getProductType()       { return productType; }
     public long        getAmount()            { return amount; }
     public String      getCurrency()          { return currency; }
     public String      getPriceSnapshotId()   { return priceSnapshotId; }

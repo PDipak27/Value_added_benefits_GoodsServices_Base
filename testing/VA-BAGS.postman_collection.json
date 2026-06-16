@@ -1,0 +1,420 @@
+{
+  "info": {
+    "name": "VA-BAGS",
+    "description": "VA-BAGS test collection — catalog read/admin, order command/query (saga happy paths per product type + billing decline + inventory/pool exhaustion + idempotency), and health. Saga (PAY_NOW): reserve -> authorize -> commit -> confirm -> capture -> fulfil -> complete (capture-before-fulfil, DD-24); BILL_TO_MOBILE: checkLimit -> allocate -> appendLedger -> confirm -> fulfil -> complete. Variables default to direct service ports; flip to the gateway as needed. See TEST-DATASETS.md for the dataset rationale.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "gateway", "value": "http://localhost:8080" },
+    { "key": "order", "value": "http://localhost:8081" },
+    { "key": "inventory", "value": "http://localhost:8082" },
+    { "key": "billing", "value": "http://localhost:8083" },
+    { "key": "notification", "value": "http://localhost:8084" },
+    { "key": "catalog", "value": "http://localhost:8085" },
+    { "key": "fulfilment", "value": "http://localhost:8086" },
+    { "key": "orderId", "value": "" },
+    { "key": "idemReplayKey", "value": "11111111-1111-4111-8111-111111111111" }
+  ],
+  "item": [
+    {
+      "name": "Catalog - Read",
+      "item": [
+        {
+          "name": "List offers (PREMIUM/FULL profile -> all 7 published)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/v1/offers?planTier=PREMIUM&region=IN&deviceAgeMonths=12&kycLevel=FULL",
+              "host": ["{{catalog}}"],
+              "path": ["v1", "offers"],
+              "query": [
+                { "key": "planTier", "value": "PREMIUM" },
+                { "key": "region", "value": "IN" },
+                { "key": "deviceAgeMonths", "value": "12" },
+                { "key": "kycLevel", "value": "FULL" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "pm.test('returns a list', () => Array.isArray(pm.response.json()));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List offers (BASIC/MINIMAL profile -> excludes Prime/Buds)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/v1/offers?planTier=BASIC&region=IN&kycLevel=MINIMAL",
+              "host": ["{{catalog}}"],
+              "path": ["v1", "offers"],
+              "query": [
+                { "key": "planTier", "value": "BASIC" },
+                { "key": "region", "value": "IN" },
+                { "key": "kycLevel", "value": "MINIMAL" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List offers (no params)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/v1/offers", "host": ["{{catalog}}"], "path": ["v1", "offers"] }
+          }
+        },
+        {
+          "name": "Get offer detail (OTT_NETFLIX_6M -> 200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/v1/offers/OTT_NETFLIX_6M", "host": ["{{catalog}}"], "path": ["v1", "offers", "OTT_NETFLIX_6M"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [
+                "pm.test('200 OK', () => pm.response.code === 200);",
+                "pm.test('has priceSnapshotId', () => pm.response.json().priceSnapshotId);",
+                "pm.test('has productType', () => pm.response.json().productType === 'DIGITAL_SUBSCRIPTION');"
+              ] }
+            }
+          ]
+        },
+        {
+          "name": "Get offer detail (OTT_LEGACY_3M withdrawn -> 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/v1/offers/OTT_LEGACY_3M", "host": ["{{catalog}}"], "path": ["v1", "offers", "OTT_LEGACY_3M"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('404', () => pm.response.code === 404);"] } }
+          ]
+        },
+        {
+          "name": "Get offer detail (UNKNOWN -> 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/v1/offers/NOPE_404", "host": ["{{catalog}}"], "path": ["v1", "offers", "NOPE_404"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('404', () => pm.response.code === 404);"] } }
+          ]
+        },
+        {
+          "name": "Evaluate eligibility (eligible: PREMIUM/FULL on ACC_BUDS_PRO)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"planTier\": \"PREMIUM\",\n  \"region\": \"IN\",\n  \"deviceAgeMonths\": 12,\n  \"kycLevel\": \"FULL\"\n}" },
+            "url": { "raw": "{{catalog}}/v1/offers/ACC_BUDS_PRO:evaluate", "host": ["{{catalog}}"], "path": ["v1", "offers", "ACC_BUDS_PRO:evaluate"] }
+          }
+        },
+        {
+          "name": "Evaluate eligibility (ineligible: BASIC/NONE on ACC_BUDS_PRO)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"planTier\": \"BASIC\",\n  \"region\": \"IN\",\n  \"deviceAgeMonths\": 40,\n  \"kycLevel\": \"NONE\"\n}" },
+            "url": { "raw": "{{catalog}}/v1/offers/ACC_BUDS_PRO:evaluate", "host": ["{{catalog}}"], "path": ["v1", "offers", "ACC_BUDS_PRO:evaluate"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Catalog - Admin",
+      "item": [
+        {
+          "name": "Create offer (201)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"offerCode\": \"SW_VPN_1Y\",\n  \"name\": \"SecureVPN (1 year)\",\n  \"description\": \"One-year VPN activation key.\",\n  \"productType\": \"SOFTWARE_LICENSE\",\n  \"amount\": 399,\n  \"currency\": \"INR\",\n  \"priceSnapshotId\": \"ps_2026_06_vpn1y\",\n  \"minPlanTier\": \"BASIC\",\n  \"allowedRegions\": \"IN\",\n  \"maxDeviceAgeMonths\": null,\n  \"minKycLevel\": \"MINIMAL\"\n}" },
+            "url": { "raw": "{{catalog}}/v1/offers", "host": ["{{catalog}}"], "path": ["v1", "offers"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('201 Created', () => pm.response.code === 201);"] } }
+          ]
+        },
+        {
+          "name": "Update offer (200, price change)",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"offerCode\": \"OTT_HOTSTAR_3M\",\n  \"name\": \"Hotstar 3-month bundle\",\n  \"description\": \"Three months of Hotstar (price drop).\",\n  \"productType\": \"DIGITAL_SUBSCRIPTION\",\n  \"amount\": 399,\n  \"currency\": \"INR\",\n  \"priceSnapshotId\": \"ps_2026_06_hotstar3m_v2\",\n  \"minPlanTier\": \"BASIC\",\n  \"allowedRegions\": \"IN\",\n  \"maxDeviceAgeMonths\": null,\n  \"minKycLevel\": \"MINIMAL\"\n}" },
+            "url": { "raw": "{{catalog}}/v1/offers/OTT_HOTSTAR_3M", "host": ["{{catalog}}"], "path": ["v1", "offers", "OTT_HOTSTAR_3M"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('200 OK', () => pm.response.code === 200);"] } }
+          ]
+        },
+        {
+          "name": "Withdraw offer (200)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{catalog}}/v1/offers/SW_VPN_1Y:withdraw", "host": ["{{catalog}}"], "path": ["v1", "offers", "SW_VPN_1Y:withdraw"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('200 OK', () => pm.response.code === 200);"] } }
+          ]
+        },
+        {
+          "name": "Withdraw offer (UNKNOWN -> 404)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{catalog}}/v1/offers/NOPE_404:withdraw", "host": ["{{catalog}}"], "path": ["v1", "offers", "NOPE_404:withdraw"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('404', () => pm.response.code === 404);"] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Orders - Command",
+      "item": [
+        {
+          "name": "Place order - HAPPY DIGITAL (NETFLIX 599 -> CONFIRMED, externalRef)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"subscriberId\": \"sub_test_001\",\n  \"offerCode\": \"OTT_NETFLIX_6M\",\n  \"productType\": \"DIGITAL_SUBSCRIPTION\",\n  \"priceSnapshotId\": \"ps_2026_05_netflix6m\",\n  \"amount\": 599,\n  \"currency\": \"INR\",\n  \"billingMode\": \"BILL_TO_MOBILE\"\n}" },
+            "url": { "raw": "{{order}}/v1/orders", "host": ["{{order}}"], "path": ["v1", "orders"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [
+                "pm.test('202 Accepted', () => pm.response.code === 202);",
+                "const id = pm.response.json().orderId;",
+                "pm.collectionVariables.set('orderId', id);",
+                "console.log('Digital: reserve SKIPPED -> fulfil provisions entitlement (externalRef). Captured orderId =', id, '-> expect CONFIRMED');"
+              ] }
+            }
+          ]
+        },
+        {
+          "name": "Place order - HAPPY PHYSICAL (ACC_POWERBANK_20K 899 -> CONFIRMED, trackingRef)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"subscriberId\": \"sub_test_004\",\n  \"offerCode\": \"ACC_POWERBANK_20K\",\n  \"productType\": \"PHYSICAL_GOOD\",\n  \"priceSnapshotId\": \"ps_2026_05_powerbank20k\",\n  \"amount\": 899,\n  \"currency\": \"INR\",\n  \"billingMode\": \"BILL_TO_MOBILE\"\n}" },
+            "url": { "raw": "{{order}}/v1/orders", "host": ["{{order}}"], "path": ["v1", "orders"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('202 Accepted', () => pm.response.code === 202);",
+              "pm.collectionVariables.set('orderId', pm.response.json().orderId);",
+              "console.log('Physical: reserve stock -> fulfil creates shipment (trackingRef) -> expect CONFIRMED (stock=5)');"
+            ] } }
+          ]
+        },
+        {
+          "name": "Place order - HAPPY LICENSE (SW_ANTIVIRUS_1Y 499 -> CONFIRMED, activationKey)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"subscriberId\": \"sub_test_005\",\n  \"offerCode\": \"SW_ANTIVIRUS_1Y\",\n  \"productType\": \"SOFTWARE_LICENSE\",\n  \"priceSnapshotId\": \"ps_2026_05_antivirus1y\",\n  \"amount\": 499,\n  \"currency\": \"INR\",\n  \"billingMode\": \"BILL_TO_MOBILE\"\n}" },
+            "url": { "raw": "{{order}}/v1/orders", "host": ["{{order}}"], "path": ["v1", "orders"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('202 Accepted', () => pm.response.code === 202);",
+              "pm.collectionVariables.set('orderId', pm.response.json().orderId);",
+              "console.log('License: reserve allocates one key -> fulfil echoes activationKey -> expect CONFIRMED (pool=3, exhausts after 3)');"
+            ] } }
+          ]
+        },
+        {
+          "name": "Place order - BILLING DECLINE (PHYSICAL amount 1500 -> FAILED, stock returns)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"subscriberId\": \"sub_test_002\",\n  \"offerCode\": \"ACC_POWERBANK_20K\",\n  \"productType\": \"PHYSICAL_GOOD\",\n  \"priceSnapshotId\": \"ps_2026_05_powerbank20k\",\n  \"amount\": 1500,\n  \"currency\": \"INR\",\n  \"billingMode\": \"BILL_TO_MOBILE\"\n}" },
+            "url": { "raw": "{{order}}/v1/orders", "host": ["{{order}}"], "path": ["v1", "orders"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('202 Accepted', () => pm.response.code === 202);",
+              "pm.collectionVariables.set('orderId', pm.response.json().orderId);",
+              "console.log('amount>999 on a physical offer -> reserve OK -> billing declines -> LIFO release inventory -> FAILED (verify reserved drops back)');"
+            ] } }
+          ]
+        },
+        {
+          "name": "Place order - INVENTORY FAIL (OTT_LEGACY_3M, withdrawn -> FAILED)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"subscriberId\": \"sub_test_003\",\n  \"offerCode\": \"OTT_LEGACY_3M\",\n  \"productType\": \"DIGITAL_SUBSCRIPTION\",\n  \"priceSnapshotId\": \"ps_2025_legacy3m\",\n  \"amount\": 399,\n  \"currency\": \"INR\",\n  \"billingMode\": \"BILL_TO_MOBILE\"\n}" },
+            "url": { "raw": "{{order}}/v1/orders", "host": ["{{order}}"], "path": ["v1", "orders"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('202 Accepted', () => pm.response.code === 202);",
+              "pm.collectionVariables.set('orderId', pm.response.json().orderId);",
+              "console.log('Withdrawn offer -> catalog verify returns 404 (fail-open keeps client productType). Digital skips reserve; order proceeds on the client type. Use a finite mis-seeded offer for ITEM_NOT_FOUND.');"
+            ] } }
+          ]
+        },
+        {
+          "name": "Place order - IDEMPOTENT replay (fixed key) [run twice]",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{idemReplayKey}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"subscriberId\": \"sub_test_001\",\n  \"offerCode\": \"OTT_NETFLIX_6M\",\n  \"productType\": \"DIGITAL_SUBSCRIPTION\",\n  \"priceSnapshotId\": \"ps_2026_05_netflix6m\",\n  \"amount\": 599,\n  \"currency\": \"INR\",\n  \"billingMode\": \"BILL_TO_MOBILE\"\n}" },
+            "url": { "raw": "{{order}}/v1/orders", "host": ["{{order}}"], "path": ["v1", "orders"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "const id = pm.response.json().orderId;",
+              "const prev = pm.collectionVariables.get('idemFirstOrderId');",
+              "if (!prev) { pm.collectionVariables.set('idemFirstOrderId', id); console.log('First call orderId =', id, '- run again, expect same id'); }",
+              "else { pm.test('replay returns same orderId', () => id === prev); }"
+            ] } }
+          ]
+        },
+        {
+          "name": "Place order - missing Idempotency-Key (400)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"subscriberId\": \"sub_test_001\",\n  \"offerCode\": \"OTT_NETFLIX_6M\",\n  \"productType\": \"DIGITAL_SUBSCRIPTION\",\n  \"priceSnapshotId\": \"ps_2026_05_netflix6m\",\n  \"amount\": 599,\n  \"currency\": \"INR\",\n  \"billingMode\": \"BILL_TO_MOBILE\"\n}" },
+            "url": { "raw": "{{order}}/v1/orders", "host": ["{{order}}"], "path": ["v1", "orders"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('400 or 4xx', () => pm.response.code >= 400 && pm.response.code < 500);"] } }
+          ]
+        },
+        {
+          "name": "Place order - invalid Idempotency-Key (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "not-a-uuid" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"subscriberId\": \"sub_test_001\",\n  \"offerCode\": \"OTT_NETFLIX_6M\",\n  \"productType\": \"DIGITAL_SUBSCRIPTION\",\n  \"priceSnapshotId\": \"ps_2026_05_netflix6m\",\n  \"amount\": 599,\n  \"currency\": \"INR\",\n  \"billingMode\": \"BILL_TO_MOBILE\"\n}" },
+            "url": { "raw": "{{order}}/v1/orders", "host": ["{{order}}"], "path": ["v1", "orders"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('400', () => pm.response.code === 400);"] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Orders - Query",
+      "item": [
+        {
+          "name": "Get order by id ({{orderId}})",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{order}}/v1/orders/{{orderId}}", "host": ["{{order}}"], "path": ["v1", "orders", "{{orderId}}"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.code === 200);",
+              "const b = pm.response.json();",
+              "console.log('status =', b.status, '| productType =', b.productType, '| fulfilment =', JSON.stringify(b.fulfilment), '(poll until CONFIRMED / FAILED)');"
+            ] } }
+          ]
+        },
+        {
+          "name": "Get order by id (UNKNOWN -> 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{order}}/v1/orders/ord_does_not_exist", "host": ["{{order}}"], "path": ["v1", "orders", "ord_does_not_exist"] }
+          },
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('404', () => pm.response.code === 404);"] } }
+          ]
+        },
+        {
+          "name": "List orders by subscriber",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{order}}/v1/orders?subscriberId=sub_test_001",
+              "host": ["{{order}}"],
+              "path": ["v1", "orders"],
+              "query": [{ "key": "subscriberId", "value": "sub_test_001" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Gateway (routed)",
+      "item": [
+        {
+          "name": "List offers via gateway",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/v1/offers", "host": ["{{gateway}}"], "path": ["v1", "offers"] }
+          }
+        },
+        {
+          "name": "Place order via gateway",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"subscriberId\": \"sub_test_001\",\n  \"offerCode\": \"OTT_NETFLIX_6M\",\n  \"productType\": \"DIGITAL_SUBSCRIPTION\",\n  \"priceSnapshotId\": \"ps_2026_05_netflix6m\",\n  \"amount\": 599,\n  \"currency\": \"INR\",\n  \"billingMode\": \"BILL_TO_MOBILE\"\n}" },
+            "url": { "raw": "{{gateway}}/v1/orders", "host": ["{{gateway}}"], "path": ["v1", "orders"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "item": [
+        { "name": "catalog health", "request": { "method": "GET", "header": [], "url": { "raw": "{{catalog}}/actuator/health", "host": ["{{catalog}}"], "path": ["actuator", "health"] } } },
+        { "name": "order health", "request": { "method": "GET", "header": [], "url": { "raw": "{{order}}/actuator/health", "host": ["{{order}}"], "path": ["actuator", "health"] } } },
+        { "name": "inventory health", "request": { "method": "GET", "header": [], "url": { "raw": "{{inventory}}/actuator/health", "host": ["{{inventory}}"], "path": ["actuator", "health"] } } },
+        { "name": "billing health", "request": { "method": "GET", "header": [], "url": { "raw": "{{billing}}/actuator/health", "host": ["{{billing}}"], "path": ["actuator", "health"] } } },
+        { "name": "fulfilment health", "request": { "method": "GET", "header": [], "url": { "raw": "{{fulfilment}}/actuator/health", "host": ["{{fulfilment}}"], "path": ["actuator", "health"] } } },
+        { "name": "notification health", "request": { "method": "GET", "header": [], "url": { "raw": "{{notification}}/actuator/health", "host": ["{{notification}}"], "path": ["actuator", "health"] } } }
+      ]
+    }
+  ]
+}

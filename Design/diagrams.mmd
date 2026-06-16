@@ -10,7 +10,8 @@ flowchart LR
         CAT["Catalog & Eligibility"]
         ORD["Order Service\nCQRS + Saga"]
         INV["Inventory Service"]
-        BIL["Billing Stub"]
+        BIL["Billing Service"]
+        FUL["Fulfilment Service"]
         NOT["Notification Service"]
     end
 
@@ -33,12 +34,16 @@ flowchart LR
     ORD <-->|"events + commands"| BROKER
     INV <-->|"events + commands"| BROKER
     BIL <-->|"events + commands"| BROKER
+    FUL <-->|"events + commands"| BROKER
     NOT <---|"domain events"| BROKER
     CAT <---|"domain events"| BROKER
 
     BROKER -->|"projector consumer"| RSTORE
     ORD -->|"Query API: primary"| RSTORE
     ORD -.->|"read-your-writes fallback"| WSTORE
+
+    FUL -->|"provisioning REST\nclient-credentials OAuth2"| OTT
+    OTT -->|"userinfo verify"| GW
 
 
 %% ============================================================
@@ -80,7 +85,7 @@ sequenceDiagram
     participant CDC as Eventuate CDC
     participant K as Kafka
     participant SG as PlaceOrderSaga
-    participant INV as Inventory / Billing / OTT
+    participant INV as Inventory / Billing / Fulfilment
     participant PR as OrderProjector
     participant M as MongoDB
 
@@ -91,32 +96,57 @@ sequenceDiagram
     CDC->>DB: poll outbox (published = 0)
     CDC->>K: publish OrderPlaced + saga commands
     K->>SG: drive saga
-    SG->>INV: Reserve / Authorize / Provision
+    SG->>INV: hold inventory / billing / fulfil (per billingMode — DD-23)
     INV-->>SG: replies
     SG->>DB: confirmOrder → status CONFIRMED + OrderConfirmed event (one tx)
-    K->>PR: OrderPlaced / OrderConfirmed
+    SG->>DB: completeOrder → status COMPLETED + OrderCompleted event (after fulfil)
+    K->>PR: OrderPlaced / OrderConfirmed / OrderCompleted
     PR->>M: upsert orders_v1 / entitlements_v1
 
 
 %% ============================================================
 %% 4. PLACEORDERSAGA — STATE MACHINE
 %% ============================================================
+%% Two flows by billingMode (DD-23); pivot = last compensatable step
+%% (commit for PAY_NOW, appendLedger for BILL_TO_MOBILE). confirm onward is forward-only.
+%% DD-24: PAY_NOW captures BEFORE fulfil; a hard capture decline parks at CAPTURE_FAILED.
 stateDiagram-v2
     [*] --> Placed
-    Placed --> ReservingInventory : Saga starts
-    ReservingInventory --> Reserved : InventoryReserved
-    ReservingInventory --> FailingNoCompensation : InventoryReservationFailed
-    Reserved --> AuthorizingBilling : next step
-    AuthorizingBilling --> Authorized : BillingAuthorized
-    AuthorizingBilling --> CompensatingInventory : BillingDeclined
-    Authorized --> Provisioning : next step
-    Provisioning --> Confirmed : EntitlementProvisioned
-    Provisioning --> CompensatingBilling : EntitlementProvisioningFailed (non-retryable)
-    CompensatingBilling --> CompensatingInventory : BillingRefunded
-    CompensatingInventory --> Failed : InventoryReleased
-    FailingNoCompensation --> Failed : terminal
-    Confirmed --> [*]
-    Failed --> [*]
+
+    state "PAY_NOW" as PayNow {
+        Placed --> Reserving : start
+        Reserving --> Authorizing : InventoryReserved
+        Reserving --> FailNoComp1 : ReservationFailed
+        Authorizing --> Committing : BillingAuthorized
+        Authorizing --> CompReserve : BillingDeclined
+        Committing --> Confirmed_PN : InventoryCommitted (PIVOT)
+        CompReserve --> Failed_PN : InventoryReleased
+        FailNoComp1 --> Failed_PN : terminal
+    }
+
+    state "BILL_TO_MOBILE" as Postpaid {
+        Placed2 : Placed
+        [*] --> Placed2
+        Placed2 --> CheckingLimit : start
+        CheckingLimit --> Allocating : AccountLimitOk
+        CheckingLimit --> FailNoComp2 : AccountLimitExceeded
+        Allocating --> Appending : InventoryAllocated
+        Allocating --> FailNoComp2 : AllocationFailed
+        Appending --> Confirmed_BM : LedgerAppended (PIVOT)
+        Appending --> CompAllocate : LedgerFailed
+        CompAllocate --> Failed_BM : InventoryReleased
+        FailNoComp2 --> Failed_BM : terminal
+    }
+
+    Confirmed_PN --> Capturing : confirm (forward-only)
+    Confirmed_BM --> Fulfilling : confirm (forward-only)
+    Capturing --> Fulfilling : BillingCaptured (PAY_NOW)
+    Capturing --> CaptureFailed : BillingCaptureFailed (hard decline)
+    Fulfilling --> Completed : OrderFulfilled
+    Completed --> [*]
+    CaptureFailed --> [*]
+    Failed_PN --> [*]
+    Failed_BM --> [*]
 
 
 %% ============================================================
@@ -143,17 +173,20 @@ sequenceDiagram
 
 
 %% ============================================================
-%% 6. ENTITLEMENT PROVISIONING  (Order Saga → OTT)
+%% 6. ENTITLEMENT PROVISIONING  (Fulfilment Service → OTT)
 %% ============================================================
 sequenceDiagram
-    participant SM as Order Saga
+    participant SG as Order Saga
+    participant FUL as Fulfilment Service
     participant OTT as OTT Admin API
     participant TS as Token Server (Gateway)
 
-    Note over SM: Saga step 3 — provision
-    SM->>TS: POST /oidc/token (client_credentials, scope=ott:provision)
-    TS-->>SM: access_token (short-lived, 5 min)
-    SM->>OTT: POST /admin/entitlements (Bearer token) {subscriberId, offerCode, validFrom, validUntil, sagaId}
+    SG->>FUL: fulfil step — FulfilOrderCommand (DIGITAL_SUBSCRIPTION)
+    Note over FUL: dispatch by productType → OTT provisioning
+    FUL->>TS: POST /oidc/token (client_credentials, scope=ott:provision)
+    TS-->>FUL: access_token (short-lived, 5 min)
+    FUL->>OTT: POST /admin/entitlements (Bearer token) {subscriberId, offerCode, validFrom, validUntil, sagaId}
     OTT->>OTT: upsert entitlement (idempotent on sagaId)
-    OTT-->>SM: 201 Created {externalRef}
-    Note over SM: append EntitlementProvisioned → OrderConfirmed
+    OTT-->>FUL: 201 Created {externalRef}
+    FUL-->>SG: OrderFulfilled {externalRef}
+    Note over SG: externalRef stamped onto OrderCompleted

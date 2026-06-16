@@ -14,6 +14,7 @@ import io.eventuate.tram.events.common.DomainEvent;
 public class OrderPlaced implements DomainEvent {
     private String subscriberId;
     private String offerCode;
+    private String productType;   // resolved at placement (client-sent, catalog-verified)
     private String priceSnapshotId;
     private long   amount;
     private String currency;
@@ -23,11 +24,12 @@ public class OrderPlaced implements DomainEvent {
 
     public OrderPlaced() {}
 
-    public OrderPlaced(String subscriberId, String offerCode, String priceSnapshotId,
-                       long amount, String currency, String billingMode,
-                       String idempotencyKey, long version) {
+    public OrderPlaced(String subscriberId, String offerCode, String productType,
+                       String priceSnapshotId, long amount, String currency,
+                       String billingMode, String idempotencyKey, long version) {
         this.subscriberId    = subscriberId;
         this.offerCode       = offerCode;
+        this.productType     = productType;
         this.priceSnapshotId = priceSnapshotId;
         this.amount          = amount;
         this.currency        = currency;
@@ -38,6 +40,7 @@ public class OrderPlaced implements DomainEvent {
 
     public String getSubscriberId()    { return subscriberId; }
     public String getOfferCode()       { return offerCode; }
+    public String getProductType()     { return productType; }
     public String getPriceSnapshotId() { return priceSnapshotId; }
     public long   getAmount()          { return amount; }
     public String getCurrency()        { return currency; }

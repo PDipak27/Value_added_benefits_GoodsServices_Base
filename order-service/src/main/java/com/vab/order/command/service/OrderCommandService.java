@@ -1,8 +1,12 @@
 package com.vab.order.command.service;
 
+import com.vab.events.order.OrderCancelled;
+import com.vab.events.order.OrderCancelledRefunded;
+import com.vab.events.order.OrderCompleted;
 import com.vab.events.order.OrderConfirmed;
 import com.vab.events.order.OrderFailed;
 import com.vab.events.order.OrderPlaced;
+import com.vab.order.command.catalog.CatalogClient;
 import com.vab.order.command.domain.Order;
 import com.vab.order.command.domain.OrderRepository;
 import com.vab.order.command.domain.PlaceOrderCommand;
@@ -40,17 +44,20 @@ public class OrderCommandService {
     private final SagaInstanceFactory      sagaInstanceFactory;
     private final PlaceOrderSaga           placeOrderSaga;
     private final IdempotencyKeyRepository idempotencyRepo;
+    private final CatalogClient            catalogClient;
 
     public OrderCommandService(OrderRepository orderRepo,
                                DomainEventPublisher domainEventPublisher,
                                SagaInstanceFactory sagaInstanceFactory,
                                PlaceOrderSaga placeOrderSaga,
-                               IdempotencyKeyRepository idempotencyRepo) {
+                               IdempotencyKeyRepository idempotencyRepo,
+                               CatalogClient catalogClient) {
         this.orderRepo            = orderRepo;
         this.domainEventPublisher = domainEventPublisher;
         this.sagaInstanceFactory  = sagaInstanceFactory;
         this.placeOrderSaga       = placeOrderSaga;
         this.idempotencyRepo      = idempotencyRepo;
+        this.catalogClient        = catalogClient;
     }
 
     /**
@@ -79,24 +86,41 @@ public class OrderCommandService {
         log.info("Placing order: subscriberId={}, offerCode={}, amount={} {}",
                 cmd.getSubscriberId(), cmd.getOfferCode(), cmd.getAmount(), cmd.getCurrency());
 
+        // ── Resolve productType (catalog-verified, fail-open) ──────────
+        // The mobile app builds the order from an offer, so it sends a productType.
+        // We verify it against catalog when reachable; on any failure we keep the
+        // client-sent value (DD-20 fail-open). Catalog is authoritative when present.
+        String productType = cmd.getProductType();
+        String verified    = catalogClient.resolveProductType(cmd.getOfferCode());
+        if (verified != null && !verified.equals(productType)) {
+            log.warn("ProductType mismatch for offerCode={}: client={}, catalog={} — using catalog",
+                    cmd.getOfferCode(), productType, verified);
+        }
+        if (verified != null) {
+            productType = verified;
+        }
+
         // ── Insert state-stored aggregate ──────────────────────────────
         String orderId = "ord_" + UUID.randomUUID().toString().replace("-", "");
         Order order = Order.place(
                 orderId,
                 cmd.getSubscriberId(),
                 cmd.getOfferCode(),
+                productType,
                 cmd.getPriceSnapshotId(),
                 cmd.getAmount(),
                 cmd.getCurrency(),
                 cmd.getBillingMode());
         orderRepo.saveAndFlush(order);   // assigns @Version (0)
-        log.info("Order persisted (PLACED): orderId={}, version={}", orderId, order.getVersion());
+        log.info("Order persisted (PLACED): orderId={}, productType={}, version={}",
+                orderId, productType, order.getVersion());
 
         // ── Publish OrderPlaced via the Tram outbox (same tx) ──────────
         domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
                 new OrderPlaced(
                         cmd.getSubscriberId(),
                         cmd.getOfferCode(),
+                        productType,
                         cmd.getPriceSnapshotId(),
                         cmd.getAmount(),
                         cmd.getCurrency(),
@@ -109,6 +133,7 @@ public class OrderCommandService {
                 orderId,
                 cmd.getSubscriberId(),
                 cmd.getOfferCode(),
+                productType,
                 cmd.getAmount(),
                 cmd.getCurrency(),
                 cmd.getBillingMode());
@@ -122,16 +147,95 @@ public class OrderCommandService {
         return orderId;
     }
 
-    /** Called by the saga's local step on successful fulfilment. */
+    /**
+     * Saga local step after inventory is settled (PAY_NOW: authorized + committed;
+     * BILL_TO_MOBILE: allocated + billed). Intermediate state before fulfilment;
+     * the delivery artifact is not known yet, so it ships on {@code OrderCompleted}.
+     */
     @Transactional
-    public void confirmOrder(String orderId) {
-        log.info("Confirming order: orderId={}", orderId);
+    public void confirmOrder(String orderId, String productType) {
+        log.info("Confirming order: orderId={}, productType={}", orderId, productType);
         Order order = orderRepo.findById(orderId)
                 .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
         order.confirm(Instant.now());
         orderRepo.saveAndFlush(order);   // bumps @Version
         domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
-                new OrderConfirmed(order.getConfirmedAt(), order.getVersion())));
+                new OrderConfirmed(order.getConfirmedAt(), order.getVersion(), productType)));
+    }
+
+    /**
+     * Saga local step after fulfilment and (PAY_NOW) capture. Terminal success;
+     * carries the delivery artifact (exactly one of trackingRef / activationKey /
+     * externalRef) so the read model and notification render without a re-lookup.
+     */
+    @Transactional
+    public void completeOrder(String orderId, String productType, String trackingRef,
+                              String activationKey, String externalRef) {
+        log.info("Completing order: orderId={}, productType={}", orderId, productType);
+        Order order = orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        order.complete(Instant.now(), trackingRef, activationKey, externalRef);
+        orderRepo.saveAndFlush(order);   // bumps @Version
+        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
+                new OrderCompleted(order.getCompletedAt(), order.getVersion(),
+                        productType, trackingRef, activationKey, externalRef)));
+    }
+
+    /**
+     * User-initiated cancel request (DD-26). Cooperative: this only flags the
+     * order; the running saga decides the outcome at its next checkpoint. Rejected
+     * (IllegalStateException → 409) once the order is terminal — including
+     * COMPLETED, so "after fulfilment, cancel is refused". Best-effort and
+     * idempotent: re-flagging a still-cancellable order is a no-op-ish re-set.
+     */
+    @Transactional
+    public void requestCancel(String orderId) {
+        log.info("Cancel requested: orderId={}", orderId);
+        Order order = orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        order.requestCancel();           // throws if terminal
+        orderRepo.saveAndFlush(order);
+    }
+
+    /** Read the cooperative cancel flag — called by the saga's cancel checkpoints. */
+    @Transactional(readOnly = true)
+    public boolean isCancelRequested(String orderId) {
+        return orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId))
+                .isCancelRequested();
+    }
+
+    /**
+     * Saga checkpoint before the pivot found a pending cancel (DD-26). Marks the
+     * order CANCELLED and publishes {@code OrderCancelled}; the saga then rolls
+     * back the prior compensatable steps. Nothing was charged.
+     */
+    @Transactional
+    public void cancel(String orderId, String reason) {
+        log.info("Cancelling order (pre-pivot): orderId={}, reason={}", orderId, reason);
+        Order order = orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        order.cancel(reason);
+        orderRepo.saveAndFlush(order);   // bumps @Version
+        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
+                new OrderCancelled(order.getCancelledAt(), order.getVersion(), reason)));
+    }
+
+    /**
+     * Saga forward-recovery terminal step (DD-26): the charge was settled and has
+     * been refunded (PAY_NOW) or reversed on the next-cycle ledger (BILL_TO_MOBILE)
+     * and inventory released. Marks the order CANCELLED_REFUNDED and publishes
+     * {@code OrderCancelledRefunded}.
+     */
+    @Transactional
+    public void cancelRefunded(String orderId, String reason) {
+        log.info("Cancelling order (post-pivot, refunded): orderId={}, reason={}", orderId, reason);
+        Order order = orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        order.cancelRefunded(reason);
+        orderRepo.saveAndFlush(order);   // bumps @Version
+        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
+                new OrderCancelledRefunded(order.getCancelledAt(), order.getVersion(), reason)));
     }
 
     /** Called by the saga when a terminal failure is reached. */

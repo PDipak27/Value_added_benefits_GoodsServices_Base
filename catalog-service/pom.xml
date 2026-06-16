@@ -12,6 +12,12 @@
     <name>VA-BAGS :: Catalog Service</name>
 
     <dependencies>
+        <!-- Shared ProductType vocabulary (Design/09) — catalog is the
+             authoritative source of an offer's product type. -->
+        <dependency>
+            <groupId>com.vab</groupId>
+            <artifactId>shared-events</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

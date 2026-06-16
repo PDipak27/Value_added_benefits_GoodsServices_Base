@@ -14,8 +14,9 @@ public class NotificationRouter {
 
     public Channel routeFor(NotificationType type) {
         return switch (type) {
-            case ORDER_CONFIRMED -> Channel.PUSH;
-            case ORDER_FAILED    -> Channel.SMS;
+            case ORDER_CONFIRMED, ORDER_COMPLETED -> Channel.PUSH;
+            // Failures and cancellations fall back to SMS so they reach the user directly.
+            case ORDER_FAILED, ORDER_CANCELLED, ORDER_CANCELLED_REFUNDED -> Channel.SMS;
         };
     }
 }

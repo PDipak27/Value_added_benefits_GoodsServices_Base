@@ -16,7 +16,8 @@
         <module>catalog-service</module>
         <module>order-service</module>
         <module>inventory-service</module>
-        <module>billing-stub-service</module>
+        <module>billing-service</module>
+        <module>fulfilment-service</module>
         <module>notification-service</module>
     </modules>
 

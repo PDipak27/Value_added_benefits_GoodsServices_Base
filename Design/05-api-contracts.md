@@ -24,11 +24,16 @@ Request:
 ```json
 {
   "offerCode": "OTT_NETFLIX_6M",
+  "productType": "DIGITAL_SUBSCRIPTION",
   "billingMode": "BILL_TO_MOBILE",
-  "priceSnapshotId": "ps_2026_05_abc123"
+  "priceSnapshotId": "ps_2026_05_abc123",
+  "amount": 599,
+  "currency": "INR"
 }
 ```
-`subscriberId` is derived from JWT — never in body.
+`subscriberId` is derived from JWT — never in body. `productType` is client-sent and
+verified against catalog (DD-22); `billingMode` (`PAY_NOW` | `BILL_TO_MOBILE`) selects
+the saga flow (DD-23).
 
 Responses:
 - `202 Accepted` + `Location: /v1/orders/{orderId}` — accepted, fulfillment async
@@ -63,15 +68,16 @@ Sample `GET /v1/orders/{orderId}` response:
   "offerName": "Netflix 6-month bundle",
   "amount": 599,
   "currency": "INR",
-  "status": "CONFIRMED",
+  "productType": "DIGITAL_SUBSCRIPTION",
+  "status": "COMPLETED",
   "placedAt": "2026-05-27T10:00:00Z",
   "confirmedAt": "2026-05-27T10:00:02Z",
+  "completedAt": "2026-05-27T10:00:03Z",
+  "fulfilment": { "type": "DIGITAL_SUBSCRIPTION", "externalRef": "ott_ent_..." },
   "timeline": [
     { "at": "2026-05-27T10:00:00Z", "status": "PLACED" },
-    { "at": "2026-05-27T10:00:01Z", "status": "INVENTORY_RESERVED" },
-    { "at": "2026-05-27T10:00:01Z", "status": "BILLING_AUTHORIZED" },
-    { "at": "2026-05-27T10:00:02Z", "status": "PROVISIONED" },
-    { "at": "2026-05-27T10:00:02Z", "status": "CONFIRMED" }
+    { "at": "2026-05-27T10:00:02Z", "status": "CONFIRMED" },
+    { "at": "2026-05-27T10:00:03Z", "status": "COMPLETED" }
   ]
 }
 ```

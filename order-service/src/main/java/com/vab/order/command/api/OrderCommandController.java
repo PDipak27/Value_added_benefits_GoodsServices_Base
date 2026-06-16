@@ -38,6 +38,7 @@ public class OrderCommandController {
         String orderId = commandService.placeOrder(new PlaceOrderCommand(
                 subscriberId,
                 request.offerCode(),
+                request.productType(),
                 request.priceSnapshotId(),
                 request.amount(),
                 request.currency(),
@@ -51,11 +52,32 @@ public class OrderCommandController {
                 .body(new PlaceOrderResponse(orderId));
     }
 
+    /**
+     * POST /v1/orders/{id}/cancel
+     *
+     * <p>Cooperative, best-effort cancel (DD-26): flags the order and returns 202.
+     * The saga resolves the actual outcome at its next checkpoint — rollback to
+     * CANCELLED before the pivot, or forward-recovery to CANCELLED_REFUNDED in the
+     * pre-fulfil window. Returns 409 once the order is terminal (incl. COMPLETED):
+     * after fulfilment, cancel is refused.
+     */
+    @PostMapping("/{id}/cancel")
+    public ResponseEntity<Void> cancelOrder(@PathVariable("id") String orderId) {
+        try {
+            commandService.requestCancel(orderId);
+            return ResponseEntity.accepted().build();
+        } catch (IllegalStateException e) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT, e.getMessage());
+        }
+    }
+
     // ── Request / Response DTOs (inner classes for skeleton brevity) ──────
 
     public record PlaceOrderRequest(
             String subscriberId,
             String offerCode,
+            String productType,
             String priceSnapshotId,
             long   amount,
             String currency,

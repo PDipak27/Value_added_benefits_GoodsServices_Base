@@ -1,5 +1,7 @@
 package com.vab.catalog.config;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.cache.Cache;
 import org.springframework.cache.support.SimpleValueWrapper;
 import org.springframework.lang.Nullable;
@@ -23,8 +25,8 @@ import java.util.concurrent.Callable;
  *
  * <p><strong>Cross-instance invalidation (DD-19):</strong> every {@code evict}/
  * {@code clear} also publishes a broadcast (via {@link CacheInvalidationPublisher})
- * so <em>other</em> instances clear their L1 near-immediately. The 15s L1 TTL
- * remains a backstop for any broadcast that is missed (a peer that was down) or
+ * so <em>other</em> instances clear their L1 near-immediately. The L1 TTL
+ * (configurable, default 120s) remains a backstop for any broadcast that is missed (a peer that was down) or
  * any out-of-band Redis mutation. The local synchronous eviction plus the
  * broadcast means a write is reflected everywhere within a network hop, not a
  * TTL. The local-only {@link #clearLocalL1()} / {@link #evictLocalL1(Object)}
@@ -32,6 +34,8 @@ import java.util.concurrent.Callable;
  * <strong>not</strong> re-publish — that would loop forever.
  */
 public class TwoLevelCache implements Cache {
+
+    private static final Logger log = LoggerFactory.getLogger(TwoLevelCache.class);
 
     private final String name;
     private final com.github.benmanes.caffeine.cache.Cache<Object, Object> l1;
@@ -64,6 +68,7 @@ public class TwoLevelCache implements Cache {
     public ValueWrapper get(Object key) {
         Object v = l1.getIfPresent(key);
         if (v != null) {
+            log.debug("Cache L1 HIT (cache={}, key={})", name, key);
             return new SimpleValueWrapper(v);
         }
         ValueWrapper l2Hit = l2.get(key);          // L1 miss → consult L2
@@ -72,8 +77,10 @@ public class TwoLevelCache implements Cache {
             if (val != null) {
                 l1.put(key, val);                  // back-fill L1
             }
+            log.debug("Cache L2 HIT, L1 backfilled (cache={}, key={})", name, key);
             return l2Hit;
         }
+        log.debug("Cache MISS L1+L2 → loading from source (cache={}, key={})", name, key);
         return null;
     }
 
@@ -91,10 +98,13 @@ public class TwoLevelCache implements Cache {
     public <T> T get(Object key, Callable<T> valueLoader) {
         Object v = l1.getIfPresent(key);
         if (v != null) {
+            log.debug("Cache L1 HIT (cache={}, key={})", name, key);
             return (T) v;
         }
-        // Delegate load-and-store to L2 (handles the synchronized single-flight
-        // load + Redis write), then back-fill L1 with the result.
+        // L1 miss: delegate load-and-store to L2 (synchronized single-flight load
+        // + Redis write on its own miss), then back-fill L1. We can't see whether
+        // L2 hit or loaded from source from here — only that L1 missed.
+        log.debug("Cache L1 MISS → L2/loader (cache={}, key={})", name, key);
         T loaded = l2.get(key, valueLoader);
         if (loaded != null) {
             l1.put(key, loaded);
@@ -128,6 +138,7 @@ public class TwoLevelCache implements Cache {
         l1.invalidate(key);
         l2.evict(key);
         publisher.publishEvict(name, key);
+        log.debug("Cache EVICT L1+L2 + broadcast (cache={}, key={})", name, key);
     }
 
     @Override
@@ -143,6 +154,7 @@ public class TwoLevelCache implements Cache {
         l1.invalidateAll();
         l2.clear();
         publisher.publishClear(name);
+        log.debug("Cache CLEAR L1+L2 + broadcast (cache={})", name);
     }
 
     @Override

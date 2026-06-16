@@ -3,8 +3,10 @@ package com.vab.events.billing;
 import io.eventuate.tram.commands.common.Command;
 
 /**
- * billing.Refund.v1 — compensation for {@link CaptureBillingCommand}.
- * Issued LIFO when a step after capture fails.
+ * billing.Refund.v1 — forward-recovery for a captured charge (DD-26).
+ * Capture is the pivot, so this is not a LIFO compensation; it is issued as a
+ * forward step when the order is unwound after the pivot (non-transient fulfil
+ * failure, or a cancel in the pre-fulfil window) on the way to CANCELLED_REFUNDED.
  */
 public class RefundBillingCommand implements Command {
     private String authId;
