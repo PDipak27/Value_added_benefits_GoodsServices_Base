@@ -5,6 +5,7 @@ import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
 import com.vab.events.order.OrderConfirmed;
 import com.vab.events.order.OrderFailed;
+import com.vab.events.order.OrderFulfilmentFailed;
 import com.vab.notification.dispatch.Channel;
 import com.vab.notification.dispatch.NotificationDispatcher;
 import com.vab.notification.dispatch.NotificationRouter;
@@ -46,15 +47,20 @@ public class NotificationEventConsumer {
     private final NotificationRouter       router;
     private final NotificationDispatcher   dispatcher;
     private final DeliveryRecordRepository deliveryRepo;
+    /** Ops-desk address for backoffice alerts (DD-27); subscriber-facing types ignore it. */
+    private final String                   adminRecipient;
 
     public NotificationEventConsumer(NotificationTemplates templates,
                                      NotificationRouter router,
                                      NotificationDispatcher dispatcher,
-                                     DeliveryRecordRepository deliveryRepo) {
-        this.templates    = templates;
-        this.router       = router;
-        this.dispatcher   = dispatcher;
-        this.deliveryRepo = deliveryRepo;
+                                     DeliveryRecordRepository deliveryRepo,
+                                     @org.springframework.beans.factory.annotation.Value(
+                                             "${notification.admin-recipient}") String adminRecipient) {
+        this.templates      = templates;
+        this.router         = router;
+        this.dispatcher     = dispatcher;
+        this.deliveryRepo   = deliveryRepo;
+        this.adminRecipient = adminRecipient;
     }
 
     public DomainEventHandlers domainEventHandlers() {
@@ -65,6 +71,7 @@ public class NotificationEventConsumer {
                 .onEvent(OrderCancelled.class, this::onOrderCancelled)
                 .onEvent(OrderCancelledRefunded.class, this::onOrderCancelledRefunded)
                 .onEvent(OrderFailed.class, this::onOrderFailed)
+                .onEvent(OrderFulfilmentFailed.class, this::onOrderFulfilmentFailed)
                 .build();
     }
 
@@ -125,6 +132,16 @@ public class NotificationEventConsumer {
                 Map.of("orderId", orderId, "reason", String.valueOf(event.getTerminalReason())));
     }
 
+    @Transactional
+    public void onOrderFulfilmentFailed(DomainEventEnvelope<OrderFulfilmentFailed> de) {
+        String orderId = de.getAggregateId();
+        OrderFulfilmentFailed event = de.getEvent();
+        log.info("Received OrderFulfilmentFailed: orderId={}, failedStep={}", orderId, event.getFailedStep());
+        // DD-27: backoffice/admin alert — OTT provisioning failing, order parked for re-drive.
+        notify(NotificationType.ORDER_FULFILMENT_FAILED, orderId,
+                Map.of("orderId", orderId, "reason", String.valueOf(event.getReason())));
+    }
+
     // ── Render → route → dispatch → record ──────────────────────────────────
 
     private void notify(NotificationType type, String orderId, Map<String, String> vars) {
@@ -133,15 +150,15 @@ public class NotificationEventConsumer {
 
     private void deliver(NotificationType type, String orderId, String body) {
         Channel channel = router.routeFor(type);
-        // Recipient lookup (subscriber → phone/email/device) is out of scope for
-        // the stub; we key the simulated send on the orderId.
-        String recipient = "order:" + orderId;
+        // Backoffice alerts go to the ops desk; subscriber-facing sends key on the
+        // orderId (real subscriber → phone/email lookup is out of scope for the stub).
+        String recipient = type.isBackoffice() ? adminRecipient : "order:" + orderId;
 
         String providerRef = dispatcher.dispatch(channel, recipient, body);
 
         deliveryRepo.save(new DeliveryRecord(
                 "dlv_" + UUID.randomUUID(), orderId, type, channel,
-                DeliveryRecord.Status.SENT, providerRef, body));
+                DeliveryRecord.Status.SENT, recipient, providerRef, body));
         log.info("Delivery recorded: orderId={}, type={}, channel={}, ref={}",
                 orderId, type, channel, providerRef);
     }

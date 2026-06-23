@@ -17,6 +17,7 @@ import com.vab.events.billing.ReverseLedgerCommand;
 import com.vab.events.fulfilment.FulfilOrderCommand;
 import com.vab.events.fulfilment.OrderFulfilled;
 import com.vab.events.fulfilment.OrderFulfilmentFailed;
+import com.vab.events.fulfilment.OrderProvisioningFailed;
 import com.vab.events.inventory.AllocateInventoryCommand;
 import com.vab.events.inventory.CommitInventoryCommand;
 import com.vab.events.inventory.InventoryAllocated;
@@ -159,6 +160,7 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
                     .withChannel(FULFILMENT_CHANNEL)
                     .withReply(OrderFulfilled.class)
                     .withReply(OrderFulfilmentFailed.class)
+                    .withReply(OrderProvisioningFailed.class)
                     .build();
 
     private final OrderCommandService orderCommandService;
@@ -225,6 +227,7 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
                 .invokeParticipant(this::shouldFulfil, fulfilOrderEndpoint, this::fulfilOrder)
                 .onReply(OrderFulfilled.class, this::handleOrderFulfilled)
                 .onReply(OrderFulfilmentFailed.class, this::handleOrderFulfilmentFailed)
+                .onReply(OrderProvisioningFailed.class, this::handleOrderProvisioningFailed)
             .step()
                 // 12 — forward-recovery: refund the captured charge (PAY_NOW).
                 .invokeParticipant(this::shouldRefund, refundBillingEndpoint, this::refundBilling)
@@ -471,7 +474,27 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
         log.warn("Saga fulfil FAILED (forward-recover): orderId={}, reason={}, detail={}",
                 data.getOrderId(), reply.getReason(), reply.getDetail());
         data.setForwardRecover(true);
-        data.setCancelReason("FULFIL_FAILED: " + reply.getReason() + ": " + reply.getDetail());
+        data.setCancelReason(cap("FULFIL_FAILED: " + reply.getReason() + ": " + reply.getDetail()));
+    }
+
+    private void handleOrderProvisioningFailed(PlaceOrderSagaData data, OrderProvisioningFailed reply) {
+        // OTT provisioning failed (DD-27). Success-outcome reply, so NO compensation
+        // and — unlike forward-recovery — NO refund: the charge stands. Park the
+        // order in FULFILMENT_FAILED at finalize for admin re-drive. Distinct flag so
+        // the refund/reverse/release steps stay skipped (they gate on forwardRecover).
+        log.warn("Saga provisioning FAILED (park → FULFILMENT_FAILED): orderId={}, reason={}, detail={}",
+                data.getOrderId(), reply.getReason(), reply.getDetail());
+        data.setProvisioningFailed(true);
+        data.setProvisioningFailureReason(cap(reply.getReason() + ": " + reply.getDetail()));
+    }
+
+    /**
+     * Bound a failure string before it enters PlaceOrderSagaData — Eventuate's
+     * saga_instance.saga_data_json column is small (VARCHAR), so a verbose
+     * participant detail (e.g. an upstream stack trace) must not overflow the row.
+     */
+    private static String cap(String s) {
+        return (s == null || s.length() <= 256) ? s : s.substring(0, 256) + "...";
     }
 
     // ── Step 12: Refund (PAY_NOW forward-recovery) ──────────────────────────────
@@ -497,6 +520,13 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
     // ── Step 15: Finalize (local, both) ─────────────────────────────────────────
 
     private void finalizeOrder(PlaceOrderSagaData data) {
+        if (data.isProvisioningFailed()) {
+            // DD-27: OTT park — charge stands, no unwind. Branch on reply content,
+            // never complete unconditionally.
+            log.info("Saga finalize → FULFILMENT_FAILED: orderId={}", data.getOrderId());
+            orderCommandService.fulfilmentFailed(data.getOrderId(), data.getProvisioningFailureReason());
+            return;
+        }
         if (data.isForwardRecover()) {
             log.info("Saga finalize → CANCELLED_REFUNDED: orderId={}", data.getOrderId());
             orderCommandService.cancelRefunded(data.getOrderId(), data.getCancelReason());
@@ -509,6 +539,8 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     /** Signals the pre-pivot cancel checkpoint wants Eventuate to roll back the saga. */
     static final class SagaRollback extends RuntimeException {
-        SagaRollback(String message) { super(message); }
+        private static final long serialVersionUID = -6216360105218809812L;
+
+		SagaRollback(String message) { super(message); }
     }
 }

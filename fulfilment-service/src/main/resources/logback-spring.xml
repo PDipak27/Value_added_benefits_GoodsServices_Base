@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  App-code logging: each service writes only its own com.vab.* log statements to
+  its own file, vabags-<svc>.log, keeping app code apart from framework noise
+  (which stays on the console). Rolls strictly at 1MB into numbered archives
+  vabags-<svc>.1.log .. .20.log. Override the directory with -DAPP_LOG_DIR=...
+  (default: D:/Dev/E_Learn/courses/DVA-C02/Projects/VA-BAGS/source/applogs).
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <property name="APP_LOG_DIR" value="${APP_LOG_DIR:-D:/Dev/E_Learn/courses/DVA-C02/Projects/VA-BAGS/source/applogs}"/>
+    <property name="svc" value="fulfilment-service"/>
+
+    <appender name="APP_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${APP_LOG_DIR}/vabags-${svc}.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
+            <fileNamePattern>${APP_LOG_DIR}/vabags-${svc}.%i.log</fileNamePattern>
+            <minIndex>1</minIndex>
+            <maxIndex>20</maxIndex>
+        </rollingPolicy>
+        <!-- Strict size trigger: roll the moment the active file passes 1MB. -->
+        <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+            <maxFileSize>1MB</maxFileSize>
+        </triggeringPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [${svc}] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Only our own code (com.vab.*) goes to this service's file; it also stays on console. -->
+    <logger name="com.vab" level="INFO">
+        <appender-ref ref="APP_FILE"/>
+    </logger>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

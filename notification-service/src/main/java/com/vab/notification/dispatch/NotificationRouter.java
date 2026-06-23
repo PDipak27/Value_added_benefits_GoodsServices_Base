@@ -17,6 +17,8 @@ public class NotificationRouter {
             case ORDER_CONFIRMED, ORDER_COMPLETED -> Channel.PUSH;
             // Failures and cancellations fall back to SMS so they reach the user directly.
             case ORDER_FAILED, ORDER_CANCELLED, ORDER_CANCELLED_REFUNDED -> Channel.SMS;
+            // Backoffice alert (DD-27): an admin must rectify OTT and re-drive — email the ops desk.
+            case ORDER_FULFILMENT_FAILED -> Channel.EMAIL;
         };
     }
 }

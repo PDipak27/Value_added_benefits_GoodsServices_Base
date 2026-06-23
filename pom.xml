@@ -19,6 +19,8 @@
         <module>billing-service</module>
         <module>fulfilment-service</module>
         <module>notification-service</module>
+        <module>ott-service</module>
+        <module>e2e-tests</module>
     </modules>
 
     <properties>

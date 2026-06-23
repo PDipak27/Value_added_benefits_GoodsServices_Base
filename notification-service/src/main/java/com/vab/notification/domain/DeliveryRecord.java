@@ -35,6 +35,9 @@ public class DeliveryRecord {
     @Column(name = "status", length = 16, nullable = false)
     private Status status;
 
+    @Column(name = "recipient", length = 128)
+    private String recipient;
+
     @Column(name = "provider_ref", length = 64)
     private String providerRef;
 
@@ -47,12 +50,13 @@ public class DeliveryRecord {
     protected DeliveryRecord() {}
 
     public DeliveryRecord(String id, String orderId, NotificationType type, Channel channel,
-                          Status status, String providerRef, String body) {
+                          Status status, String recipient, String providerRef, String body) {
         this.id          = id;
         this.orderId     = orderId;
         this.type        = type;
         this.channel     = channel;
         this.status      = status;
+        this.recipient   = recipient;
         this.providerRef = providerRef;
         this.body        = body;
         this.createdAt   = Instant.now();
@@ -62,6 +66,7 @@ public class DeliveryRecord {
     public String           getOrderId()     { return orderId; }
     public NotificationType getType()        { return type; }
     public Channel          getChannel()     { return channel; }
+    public String           getRecipient()   { return recipient; }
     public Status           getStatus()      { return status; }
     public String           getProviderRef() { return providerRef; }
     public String           getBody()        { return body; }

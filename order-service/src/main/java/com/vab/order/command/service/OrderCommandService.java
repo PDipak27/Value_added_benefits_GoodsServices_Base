@@ -5,11 +5,14 @@ import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
 import com.vab.events.order.OrderConfirmed;
 import com.vab.events.order.OrderFailed;
+import com.vab.events.order.OrderFulfilmentFailed;
 import com.vab.events.order.OrderPlaced;
 import com.vab.order.command.catalog.CatalogClient;
 import com.vab.order.command.domain.Order;
 import com.vab.order.command.domain.OrderRepository;
+import com.vab.order.command.domain.OrderStatus;
 import com.vab.order.command.domain.PlaceOrderCommand;
+import com.vab.order.command.fulfilment.FulfilmentReDrive;
 import com.vab.order.idempotency.IdempotencyKey;
 import com.vab.order.idempotency.IdempotencyKeyRepository;
 import com.vab.order.saga.PlaceOrderSaga;
@@ -45,19 +48,22 @@ public class OrderCommandService {
     private final PlaceOrderSaga           placeOrderSaga;
     private final IdempotencyKeyRepository idempotencyRepo;
     private final CatalogClient            catalogClient;
+    private final FulfilmentReDrive        fulfilmentReDrive;
 
     public OrderCommandService(OrderRepository orderRepo,
                                DomainEventPublisher domainEventPublisher,
                                SagaInstanceFactory sagaInstanceFactory,
                                PlaceOrderSaga placeOrderSaga,
                                IdempotencyKeyRepository idempotencyRepo,
-                               CatalogClient catalogClient) {
+                               CatalogClient catalogClient,
+                               FulfilmentReDrive fulfilmentReDrive) {
         this.orderRepo            = orderRepo;
         this.domainEventPublisher = domainEventPublisher;
         this.sagaInstanceFactory  = sagaInstanceFactory;
         this.placeOrderSaga       = placeOrderSaga;
         this.idempotencyRepo      = idempotencyRepo;
         this.catalogClient        = catalogClient;
+        this.fulfilmentReDrive    = fulfilmentReDrive;
     }
 
     /**
@@ -248,5 +254,110 @@ public class OrderCommandService {
         orderRepo.saveAndFlush(order);   // bumps @Version
         domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
                 new OrderFailed(failedStep, reason, order.getVersion())));
+    }
+
+    /**
+     * Saga finalize branch (DD-27): OTT provisioning failed (success-outcome
+     * {@code OrderProvisioningFailed} reply). The charge stands — no refund. The
+     * order is parked in the non-terminal {@code FULFILMENT_FAILED} state and
+     * {@code OrderFulfilmentFailed} is published so notification alerts an admin.
+     */
+    @Transactional
+    public void fulfilmentFailed(String orderId, String reason) {
+        log.warn("Parking order (FULFILMENT_FAILED): orderId={}, reason={}", orderId, reason);
+        Order order = orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        order.fulfilmentFailed(reason);
+        orderRepo.saveAndFlush(order);   // bumps @Version
+        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
+                new OrderFulfilmentFailed(order.getLastAttemptAt(), order.getVersion(),
+                        order.getFailedStep(), reason)));
+    }
+
+    /**
+     * Admin re-drive of a parked order (DD-27): re-send the original
+     * {@code FulfilOrderCommand} so fulfilment-service's {@code fulfil()} handler
+     * runs again against the now-fixed OTT service. This is a plain Tram command
+     * (not a saga, not a saga resume — the original saga has resolved). The send
+     * joins this transaction via the Tram outbox; the order stays parked until the
+     * reply lands and {@link #completeFromReDrive}/{@link #parkFromReDrive} applies it.
+     *
+     * @throws IllegalStateException (→ 409) if the order is not currently parked
+     */
+    @Transactional
+    public void retryFulfilment(String orderId) {
+        Order order = orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        requireParked(order);
+        log.info("Re-driving fulfilment (Tram command): orderId={}, productType={}",
+                orderId, order.getProductType());
+        fulfilmentReDrive.reDrive(order);
+    }
+
+    /**
+     * Applies a successful re-drive reply (DD-27): completes the parked order with the
+     * provisioned {@code externalRef}. Idempotent — a reply for an order that is no
+     * longer parked (already completed by an earlier delivery) is a logged no-op.
+     */
+    @Transactional
+    public void completeFromReDrive(String orderId, String externalRef) {
+        Order order = orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        if (order.getStatus() != OrderStatus.FULFILMENT_FAILED) {
+            log.info("Re-drive success ignored: orderId={} is {}, not parked", orderId, order.getStatus());
+            return;
+        }
+        order.complete(Instant.now(), null, null, externalRef);
+        orderRepo.saveAndFlush(order);   // bumps @Version
+        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
+                new OrderCompleted(order.getCompletedAt(), order.getVersion(),
+                        order.getProductType(), null, null, externalRef)));
+    }
+
+    /**
+     * Applies a failed re-drive reply (DD-27): the order stays parked. Re-stamps the
+     * attempt and re-publishes {@code OrderFulfilmentFailed} so the admin is alerted
+     * again. Idempotent — ignored if the order is no longer parked.
+     */
+    @Transactional
+    public void parkFromReDrive(String orderId, String reason) {
+        Order order = orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        if (order.getStatus() != OrderStatus.FULFILMENT_FAILED) {
+            log.info("Re-drive failure ignored: orderId={} is {}, not parked", orderId, order.getStatus());
+            return;
+        }
+        order.fulfilmentFailed(reason);
+        orderRepo.saveAndFlush(order);   // bumps @Version
+        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
+                new OrderFulfilmentFailed(order.getLastAttemptAt(), order.getVersion(),
+                        order.getFailedStep(), reason)));
+    }
+
+    /**
+     * Admin manual override (DD-27): the entitlement was provisioned out-of-band;
+     * complete the parked order with the supplied {@code externalRef} without
+     * re-calling OTT.
+     *
+     * @throws IllegalStateException (→ 409) if the order is not currently parked
+     */
+    @Transactional
+    public void completeFulfilment(String orderId, String externalRef) {
+        log.info("Manual fulfilment override: orderId={}, externalRef={}", orderId, externalRef);
+        Order order = orderRepo.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        requireParked(order);
+        order.complete(Instant.now(), null, null, externalRef);
+        orderRepo.saveAndFlush(order);   // bumps @Version
+        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
+                new OrderCompleted(order.getCompletedAt(), order.getVersion(),
+                        order.getProductType(), null, null, externalRef)));
+    }
+
+    private void requireParked(Order order) {
+        if (order.getStatus() != OrderStatus.FULFILMENT_FAILED) {
+            throw new IllegalStateException(
+                    "Order " + order.getId() + " is " + order.getStatus() + ", not FULFILMENT_FAILED");
+        }
     }
 }

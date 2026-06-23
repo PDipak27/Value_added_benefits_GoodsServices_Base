@@ -34,9 +34,12 @@ public class FulfilmentCommandHandlers {
     private static final Logger log = LoggerFactory.getLogger(FulfilmentCommandHandlers.class);
 
     private final FulfilmentRecordRepository records;
+    private final OttProvisioningService     ottProvisioning;
 
-    public FulfilmentCommandHandlers(FulfilmentRecordRepository records) {
-        this.records = records;
+    public FulfilmentCommandHandlers(FulfilmentRecordRepository records,
+                                     OttProvisioningService ottProvisioning) {
+        this.records         = records;
+        this.ottProvisioning = ottProvisioning;
     }
 
     public CommandHandlers commandHandlerDefinitions() {
@@ -90,20 +93,27 @@ public class FulfilmentCommandHandlers {
                 ProductType.PHYSICAL_GOOD, trackingRef, null, null));
         log.info("Fulfilled PHYSICAL_GOOD: orderId={}, shipment={}, trackingRef={}",
                 cmd.getOrderId(), fulfilmentRef, trackingRef);
-        return withSuccess(new OrderFulfilled(
+        return withSuccess(new OrderFulfilled(cmd.getOrderId(),
                 ProductType.PHYSICAL_GOOD.name(), fulfilmentRef, trackingRef, null, null));
     }
 
-    /** DIGITAL_SUBSCRIPTION: provision an OTT entitlement → external ref. */
+    /**
+     * DIGITAL_SUBSCRIPTION: provision an OTT entitlement at the external
+     * {@code ott-service} (DD-27). On failure (OTT unavailable after bounded
+     * retries, or a 422 rejection) this does NOT forward-recover — it replies
+     * {@link OrderProvisioningFailed}, a success-outcome branch reply that parks
+     * the order in {@code FULFILMENT_FAILED} for admin-driven re-drive.
+     */
     private Message fulfilDigital(FulfilOrderCommand cmd) {
-        String fulfilmentRef = "ent_" + UUID.randomUUID();
-        String externalRef   = "OTT-" + UUID.randomUUID().toString().substring(0, 12).toUpperCase();
-        records.save(new FulfilmentRecord(fulfilmentRef, cmd.getOrderId(),
-                ProductType.DIGITAL_SUBSCRIPTION, null, null, externalRef));
-        log.info("Fulfilled DIGITAL_SUBSCRIPTION: orderId={}, entitlement={}, externalRef={}",
-                cmd.getOrderId(), fulfilmentRef, externalRef);
-        return withSuccess(new OrderFulfilled(
-                ProductType.DIGITAL_SUBSCRIPTION.name(), fulfilmentRef, null, null, externalRef));
+        OttProvisioningService.ProvisionResult r = ottProvisioning.provision(
+                cmd.getOrderId(), cmd.getSubscriberId(), cmd.getOfferCode());
+        if (!r.provisioned()) {
+            log.warn("Provision PARKED (FULFILMENT_FAILED): orderId={}, reason={}",
+                    cmd.getOrderId(), r.reason());
+            return withSuccess(new OrderProvisioningFailed(cmd.getOrderId(), r.reason(), r.detail()));
+        }
+        return withSuccess(new OrderFulfilled(cmd.getOrderId(),
+                ProductType.DIGITAL_SUBSCRIPTION.name(), r.fulfilmentRef(), null, null, r.externalRef()));
     }
 
     /** SOFTWARE_LICENSE: the key was allocated by inventory at reserve; echo it. */
@@ -121,7 +131,7 @@ public class FulfilmentCommandHandlers {
                 ProductType.SOFTWARE_LICENSE, null, activationKey, null));
         log.info("Fulfilled SOFTWARE_LICENSE: orderId={}, record={}, activationKey={}",
                 cmd.getOrderId(), fulfilmentRef, activationKey);
-        return withSuccess(new OrderFulfilled(
+        return withSuccess(new OrderFulfilled(cmd.getOrderId(),
                 ProductType.SOFTWARE_LICENSE.name(), fulfilmentRef, null, activationKey, null));
     }
 

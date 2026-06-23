@@ -33,6 +33,11 @@ public class NotificationTemplates {
             "Your order {orderId} has been cancelled ({reason}) and fully refunded. "
                     + "Allow a few days for the amount to reappear on your statement.";
 
+    /** Backoffice/admin alert (DD-27) — not subscriber-facing. */
+    private static final String FULFILMENT_FAILED_TEMPLATE =
+            "ACTION REQUIRED: order {orderId} is parked in FULFILMENT_FAILED ({reason}). "
+                    + "OTT provisioning is failing — rectify the external service, then re-drive fulfilment.";
+
     /** Per-product-type completion copy (keyed by ProductType.name()). */
     private static final Map<String, String> COMPLETED_BY_TYPE = Map.of(
             "PHYSICAL_GOOD",
@@ -50,6 +55,7 @@ public class NotificationTemplates {
             case ORDER_CONFIRMED           -> CONFIRMED_TEMPLATE;
             case ORDER_CANCELLED           -> CANCELLED_TEMPLATE;
             case ORDER_CANCELLED_REFUNDED  -> CANCELLED_REFUNDED_TEMPLATE;
+            case ORDER_FULFILMENT_FAILED   -> FULFILMENT_FAILED_TEMPLATE;
             default                        -> COMPLETED_DEFAULT;
         };
         return substitute(body, vars);

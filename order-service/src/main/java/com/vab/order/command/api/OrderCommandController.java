@@ -72,6 +72,44 @@ public class OrderCommandController {
         }
     }
 
+    /**
+     * POST /v1/orders/{id}/retry-fulfilment   (admin, DD-27)
+     *
+     * <p>Re-drives a parked order by re-sending the fulfil command to
+     * fulfilment-service. Returns 202: the order completes (or re-parks)
+     * asynchronously when fulfilment replies. 409 if the order is not currently
+     * {@code FULFILMENT_FAILED}.
+     */
+    @PostMapping("/{id}/retry-fulfilment")
+    public ResponseEntity<Void> retryFulfilment(@PathVariable("id") String orderId) {
+        try {
+            commandService.retryFulfilment(orderId);
+            return ResponseEntity.accepted().build();
+        } catch (IllegalStateException e) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT, e.getMessage());
+        }
+    }
+
+    /**
+     * POST /v1/orders/{id}/complete-fulfilment   (admin, DD-27)
+     * Body: { "externalRef": "OTT-..." }
+     *
+     * <p>Manual override: completes a parked order with an out-of-band entitlement
+     * ref, without re-calling OTT. 409 if the order is not currently parked.
+     */
+    @PostMapping("/{id}/complete-fulfilment")
+    public ResponseEntity<Void> completeFulfilment(@PathVariable("id") String orderId,
+                                                   @RequestBody CompleteFulfilmentRequest request) {
+        try {
+            commandService.completeFulfilment(orderId, request.externalRef());
+            return ResponseEntity.accepted().build();
+        } catch (IllegalStateException e) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT, e.getMessage());
+        }
+    }
+
     // ── Request / Response DTOs (inner classes for skeleton brevity) ──────
 
     public record PlaceOrderRequest(
@@ -85,6 +123,8 @@ public class OrderCommandController {
     ) {}
 
     public record PlaceOrderResponse(String orderId) {}
+
+    public record CompleteFulfilmentRequest(String externalRef) {}
 
     // ── Validation ────────────────────────────────────────────────────────
 

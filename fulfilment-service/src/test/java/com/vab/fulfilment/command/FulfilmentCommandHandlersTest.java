@@ -29,12 +29,13 @@ import static org.mockito.Mockito.*;
 class FulfilmentCommandHandlersTest {
 
     @Mock FulfilmentRecordRepository records;
+    @Mock OttProvisioningService ottProvisioning;
 
     private FulfilmentCommandHandlers handlers;
 
     @BeforeEach
     void setUp() {
-        handlers = new FulfilmentCommandHandlers(records);
+        handlers = new FulfilmentCommandHandlers(records, ottProvisioning);
     }
 
     @SuppressWarnings("unchecked")
@@ -65,13 +66,35 @@ class FulfilmentCommandHandlersTest {
         }
 
         @Test
-        void digital_subscription_produces_an_external_ref() {
+        void digital_subscription_delegates_to_ott_and_echoes_external_ref() {
+            // DD-27: digital provisioning is delegated; the record is written by
+            // OttProvisioningService, so the handler only relays the result.
+            when(ottProvisioning.provision("ord-1", "sub-1", "OFF-d"))
+                    .thenReturn(new OttProvisioningService.ProvisionResult(
+                            true, "ent_x", "OTT-ABC123", null, null));
+
             Message reply = handlers.fulfil(cmd(new FulfilOrderCommand(
                     "ord-1", "sub-1", "OFF-d", "DIGITAL_SUBSCRIPTION", null)));
 
             OrderFulfilled body = Replies.assertSuccess(reply, OrderFulfilled.class);
-            assertThat(body.getExternalRef()).startsWith("OTT-");
-            assertThat(savedRecord().getExternalRef()).isNotNull();
+            assertThat(body.getExternalRef()).isEqualTo("OTT-ABC123");
+            verify(records, never()).save(any());
+        }
+
+        @Test
+        void digital_provisioning_failure_parks_with_provisioning_failed() {
+            // DD-27: an OTT failure replies OrderProvisioningFailed (success-outcome,
+            // park — never a rollback) and is distinct from OrderFulfilmentFailed.
+            when(ottProvisioning.provision("ord-1", "sub-1", "OFF-d"))
+                    .thenReturn(new OttProvisioningService.ProvisionResult(
+                            false, null, null, "PROVISIONING_UNAVAILABLE", "503"));
+
+            Message reply = handlers.fulfil(cmd(new FulfilOrderCommand(
+                    "ord-1", "sub-1", "OFF-d", "DIGITAL_SUBSCRIPTION", null)));
+
+            assertThat(Replies.assertSuccess(reply, OrderProvisioningFailed.class).getReason())
+                    .isEqualTo("PROVISIONING_UNAVAILABLE");
+            verify(records, never()).save(any());
         }
 
         @Test

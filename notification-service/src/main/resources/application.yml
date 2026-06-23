@@ -25,6 +25,10 @@ spring:
     locations: #flyway auto adds locations.
     - classpath:db/migration
 
+# ── Backoffice/admin alerts (DD-27): ops desk for FULFILMENT_FAILED ─────────
+notification:
+  admin-recipient: ops-desk@vab.example
+
 eventuatelocal:
   kafka:
     bootstrap:

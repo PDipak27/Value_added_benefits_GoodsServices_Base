@@ -25,6 +25,12 @@ spring:
     locations: #flyway auto adds locations.
     - classpath:db/migration
 
+# ── External OTT provider (DD-27): provisioning + bounded in-call retries ───
+ott:
+  base-url: http://localhost:8087
+  max-attempts: 3
+  retry-delay-ms: 200
+
 eventuatelocal:
   kafka:
     bootstrap:

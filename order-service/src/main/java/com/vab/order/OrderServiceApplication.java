@@ -1,5 +1,6 @@
 package com.vab.order;
 
+import com.vab.events.common.EventuateJackson;
 import com.vab.order.query.projection.OrderProjector;
 import io.eventuate.tram.events.subscriber.DomainEventDispatcher;
 import io.eventuate.tram.events.subscriber.DomainEventDispatcherFactory;
@@ -23,6 +24,10 @@ import org.springframework.context.annotation.Import;
 public class OrderServiceApplication {
 
     public static void main(String[] args) {
+        // Saga consumes Instant-bearing replies (e.g. InventoryReserved.reservedUntil)
+        // it never instantiates, so their static register-hook never fires. Register
+        // JavaTimeModule on Eventuate's JSonMapper before any reply is deserialized.
+        EventuateJackson.register();
         SpringApplication.run(OrderServiceApplication.class, args);
     }
 

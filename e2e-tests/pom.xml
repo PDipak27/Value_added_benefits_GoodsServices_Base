@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.vab</groupId>
+        <artifactId>va-bags</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>e2e-tests</artifactId>
+    <name>VA-BAGS :: E2E Tests</name>
+
+    <!--
+      Black-box end-to-end tests (REST Assured + Awaitility) that drive the full
+      running stack: infra via docker-compose (Kafka, Mongo, eventuate-cdc, Redis)
+      + a local Postgres + all 8 services started locally. Because the saga is
+      asynchronous (command/reply over Kafka, CDC outbox relay, read-model
+      projection), the tests POST then poll the query side until the order reaches
+      the expected status.
+
+      These tests are NOT run by a normal `mvn test` (class names end in *E2E,
+      which surefire's default pattern ignores). Run them explicitly:
+          mvn -pl e2e-tests -Pe2e test
+      Override base URLs with -Dvab.order.url=... etc. when not on localhost.
+    -->
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- REST Assured needs a JSON serializer on the classpath to marshal request
+             bodies (Map/POJO → JSON); spring-boot-starter-test doesn't pull it in. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <profiles>
+        <!-- Opt-in: actually run the *E2E classes against a live stack. -->
+        <profile>
+            <id>e2e</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <includes>
+                                <include>**/*E2E.java</include>
+                            </includes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

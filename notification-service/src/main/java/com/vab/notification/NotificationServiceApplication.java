@@ -1,5 +1,6 @@
 package com.vab.notification;
 
+import com.vab.events.common.EventuateJackson;
 import com.vab.notification.consumer.NotificationEventConsumer;
 import io.eventuate.tram.events.subscriber.DomainEventDispatcher;
 import io.eventuate.tram.events.subscriber.DomainEventDispatcherFactory;
@@ -40,6 +41,9 @@ public class NotificationServiceApplication {
     public DomainEventDispatcher notificationDomainEventDispatcher(
             NotificationEventConsumer consumer,
             DomainEventDispatcherFactory factory) {
+        // Pure consumer: it never instantiates the events, so their Instant-module
+        // static hook never fires. Register JavaTimeModule eagerly before consuming.
+        EventuateJackson.register();
         return factory.make("notificationService", consumer.domainEventHandlers());
     }
 }

@@ -37,13 +37,13 @@ public class CatalogSeeder implements ApplicationRunner {
             return;
         }
 
-        // Offers across the three product types (Design/09). Finite types align
-        // 1:1 with the inventory seed (inventory-service V3 migration):
-        // PHYSICAL_GOOD → stock count, SOFTWARE_LICENSE → key pool. Digital subs
-        // are infinite and have NO inventory row (the saga skips reserve).
-        // OTT_LEGACY_3M is withdrawn (exercises the withdrawn-offer path).
+        // Offers across the three product types (Design/09). All three FINITE types
+        // align 1:1 with the inventory seed: PHYSICAL_GOOD → stock count,
+        // SOFTWARE_LICENSE → key pool, DIGITAL_SUBSCRIPTION → entitlement count
+        // (made finite in inventory V4). OTT_LEGACY_3M is withdrawn and has no
+        // inventory row (exercises the withdrawn/ITEM_NOT_FOUND paths).
         offers.saveAll(List.of(
-            // ── DIGITAL_SUBSCRIPTION (infinite — no inventory row) ───────────
+            // ── DIGITAL_SUBSCRIPTION (finite entitlement count; inventory V4/V5) ─
             new Offer("OTT_NETFLIX_6M", "Netflix 6-month bundle",
                     "Six months of Netflix on us.", ProductType.DIGITAL_SUBSCRIPTION, 599, "INR",
                     "ps_2026_05_netflix6m", OfferStatus.PUBLISHED,
@@ -55,6 +55,20 @@ public class CatalogSeeder implements ApplicationRunner {
             new Offer("OTT_HOTSTAR_3M", "Hotstar 3-month bundle",
                     "Three months of Hotstar.", ProductType.DIGITAL_SUBSCRIPTION, 499, "INR",
                     "ps_2026_05_hotstar3m", OfferStatus.PUBLISHED,
+                    PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
+            // OTT provisioning-failure demo triggers (DD-27). The offerCode is
+            // forwarded to ott-service, which keys its 503/422 triggers off it:
+            // OTTDOWN → 503 (retry then park), OTTBAD → 422 (park, no retry). Both
+            // park the order in FULFILMENT_FAILED. Inventory rows: V5 migration.
+            new Offer("OTT_OTTDOWN_1M", "OTT (provider-down demo)",
+                    "Provisioning fails with 503 to exercise the FULFILMENT_FAILED park (DD-27).",
+                    ProductType.DIGITAL_SUBSCRIPTION, 499, "INR",
+                    "ps_2026_05_ottdown1m", OfferStatus.PUBLISHED,
+                    PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
+            new Offer("OTT_OTTBAD_1M", "OTT (provider-reject demo)",
+                    "Provisioning fails with 422 to exercise the FULFILMENT_FAILED park (DD-27).",
+                    ProductType.DIGITAL_SUBSCRIPTION, 499, "INR",
+                    "ps_2026_05_ottbad1m", OfferStatus.PUBLISHED,
                     PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
             // ── SOFTWARE_LICENSE (finite key pool) ───────────────────────────
             new Offer("SW_MSOFFICE_1Y", "Microsoft 365 Personal (1 year)",

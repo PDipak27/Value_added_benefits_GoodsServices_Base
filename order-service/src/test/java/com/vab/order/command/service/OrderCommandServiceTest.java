@@ -48,13 +48,14 @@ class OrderCommandServiceTest {
     @Mock PlaceOrderSaga placeOrderSaga;
     @Mock IdempotencyKeyRepository idempotencyRepo;
     @Mock CatalogClient catalogClient;
+    @Mock com.vab.order.command.fulfilment.FulfilmentReDrive fulfilmentReDrive;
 
     private OrderCommandService service;
 
     @BeforeEach
     void setUp() {
         service = new OrderCommandService(orderRepo, publisher, sagaInstanceFactory,
-                placeOrderSaga, idempotencyRepo, catalogClient);
+                placeOrderSaga, idempotencyRepo, catalogClient, fulfilmentReDrive);
     }
 
     private static PlaceOrderCommand placeCmd(String productType) {

@@ -87,6 +87,10 @@ public class Order {
     @Column(name = "failure_reason", columnDefinition = "text")
     private String failureReason;
 
+    /** Timestamp of the last fulfilment attempt; stamped each time the order parks (DD-27). */
+    @Column(name = "last_attempt_at")
+    private Instant lastAttemptAt;
+
     protected Order() {}  // JPA
 
     /** Factory for a freshly placed order. */
@@ -158,6 +162,18 @@ public class Order {
         this.failureReason = reason;
     }
 
+    /**
+     * Non-terminal park after a failed OTT provisioning (DD-27). The charge stands
+     * (no refund — diverges from DD-26); an admin re-drives or manually completes.
+     * Reuses {@code failedStep}/{@code failureReason} and stamps the attempt time.
+     */
+    public void fulfilmentFailed(String reason) {
+        this.status        = OrderStatus.FULFILMENT_FAILED;
+        this.failedStep    = "FULFIL_PROVISION";
+        this.failureReason = reason;
+        this.lastAttemptAt = Instant.now();
+    }
+
     private boolean isTerminal() {
         return status == OrderStatus.COMPLETED
                 || status == OrderStatus.FAILED
@@ -187,4 +203,5 @@ public class Order {
     public String      getExternalRef()     { return externalRef; }
     public String      getFailedStep()      { return failedStep; }
     public String      getFailureReason()   { return failureReason; }
+    public Instant     getLastAttemptAt()   { return lastAttemptAt; }
 }

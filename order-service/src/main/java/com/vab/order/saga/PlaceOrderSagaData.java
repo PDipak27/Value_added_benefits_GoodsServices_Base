@@ -26,6 +26,12 @@ public class PlaceOrderSagaData {
     private boolean forwardRecover;
     private String  cancelReason;
 
+    // Park branch (DD-27): set post-pivot when OTT provisioning fails
+    // (OrderProvisioningFailed reply). Distinct from forwardRecover — the charge is
+    // NOT unwound; finalize parks the order in FULFILMENT_FAILED for admin re-drive.
+    private boolean provisioningFailed;
+    private String  provisioningFailureReason;
+
     // Fulfilment outcome (exactly one artifact populated, per productType)
     private String fulfilmentRef;
     private String trackingRef;    // PHYSICAL_GOOD
@@ -57,6 +63,8 @@ public class PlaceOrderSagaData {
     public String  getCaptureId()    { return captureId; }
     public boolean isForwardRecover(){ return forwardRecover; }
     public String  getCancelReason() { return cancelReason; }
+    public boolean isProvisioningFailed()       { return provisioningFailed; }
+    public String  getProvisioningFailureReason(){ return provisioningFailureReason; }
     public String getLedgerEntryId() { return ledgerEntryId; }
     public String getFulfilmentRef() { return fulfilmentRef; }
     public String getTrackingRef()   { return trackingRef; }
@@ -69,6 +77,8 @@ public class PlaceOrderSagaData {
     public void setCaptureId(String captureId)         { this.captureId = captureId; }
     public void setForwardRecover(boolean forwardRecover) { this.forwardRecover = forwardRecover; }
     public void setCancelReason(String cancelReason)   { this.cancelReason = cancelReason; }
+    public void setProvisioningFailed(boolean provisioningFailed) { this.provisioningFailed = provisioningFailed; }
+    public void setProvisioningFailureReason(String reason)       { this.provisioningFailureReason = reason; }
     public void setLedgerEntryId(String ledgerEntryId) { this.ledgerEntryId = ledgerEntryId; }
     public void setFulfilmentRef(String fulfilmentRef) { this.fulfilmentRef = fulfilmentRef; }
     public void setTrackingRef(String trackingRef)     { this.trackingRef = trackingRef; }

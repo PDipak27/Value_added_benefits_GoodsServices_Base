@@ -5,6 +5,7 @@ import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
 import com.vab.events.order.OrderConfirmed;
 import com.vab.events.order.OrderFailed;
+import com.vab.events.order.OrderFulfilmentFailed;
 import com.vab.notification.dispatch.Channel;
 import com.vab.notification.dispatch.NotificationDispatcher;
 import com.vab.notification.dispatch.NotificationRouter;
@@ -46,7 +47,8 @@ class NotificationEventConsumerTest {
     @BeforeEach
     void setUp() {
         consumer = new NotificationEventConsumer(
-                new NotificationTemplates(), new NotificationRouter(), dispatcher, deliveryRepo);
+                new NotificationTemplates(), new NotificationRouter(), dispatcher, deliveryRepo,
+                "ops-desk@vab.example");
         when(dispatcher.dispatch(any(Channel.class), anyString(), anyString())).thenReturn("msg_x");
     }
 
@@ -107,6 +109,20 @@ class NotificationEventConsumerTest {
         assertThat(r.getType()).isEqualTo(NotificationType.ORDER_CANCELLED_REFUNDED);
         assertThat(r.getChannel()).isEqualTo(Channel.SMS);
         assertThat(r.getBody()).contains("ord-1").contains("refunded");
+    }
+
+    @Test
+    void order_fulfilment_failed_alerts_admin_by_email() {
+        consumer.onOrderFulfilmentFailed(envelope("ord-1",
+                new OrderFulfilmentFailed(Instant.now(), 3, "FULFIL_PROVISION",
+                        "PROVISIONING_UNAVAILABLE: 503")));
+
+        // DD-27: backoffice alert — EMAIL to the ops desk, NOT the subscriber.
+        DeliveryRecord r = savedRecords(1).get(0);
+        assertThat(r.getType()).isEqualTo(NotificationType.ORDER_FULFILMENT_FAILED);
+        assertThat(r.getChannel()).isEqualTo(Channel.EMAIL);
+        assertThat(r.getRecipient()).isEqualTo("ops-desk@vab.example");
+        assertThat(r.getBody()).contains("ACTION REQUIRED").contains("re-drive");
     }
 
     @Test
