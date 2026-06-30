@@ -110,6 +110,25 @@ public class OrderCommandController {
         }
     }
 
+    /**
+     * POST /v1/orders/{id}/revoke-entitlement   (admin, Phase 3)
+     *
+     * <p>Revokes a completed order's entitlement (OTT {@code DELETE} for
+     * DIGITAL_SUBSCRIPTION; read-model-only for SOFTWARE_LICENSE). Returns 202: the
+     * entitlement flips to REVOKED asynchronously when fulfilment replies. 409 if the
+     * order is not COMPLETED or has no entitlement to revoke.
+     */
+    @PostMapping("/{id}/revoke-entitlement")
+    public ResponseEntity<Void> revokeEntitlement(@PathVariable("id") String orderId) {
+        try {
+            commandService.requestEntitlementRevoke(orderId);
+            return ResponseEntity.accepted().build();
+        } catch (IllegalStateException e) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT, e.getMessage());
+        }
+    }
+
     // ── Request / Response DTOs (inner classes for skeleton brevity) ──────
 
     public record PlaceOrderRequest(

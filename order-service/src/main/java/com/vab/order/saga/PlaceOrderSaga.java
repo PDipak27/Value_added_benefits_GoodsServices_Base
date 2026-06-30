@@ -454,18 +454,21 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
     // ── Step 11: Fulfil (both; skipped while forward-recovering) ────────────────
 
     private FulfilOrderCommand fulfilOrder(PlaceOrderSagaData data) {
-        log.info("Saga fulfil: orderId={}, productType={}", data.getOrderId(), data.getProductType());
+        log.info("Saga fulfil: orderId={}, productType={}, termMonths={}",
+                data.getOrderId(), data.getProductType(), data.getTermMonths());
         return new FulfilOrderCommand(data.getOrderId(), data.getSubscriberId(),
-                data.getOfferCode(), data.getProductType(), data.getActivationKey());
+                data.getOfferCode(), data.getProductType(), data.getActivationKey(), data.getTermMonths());
     }
 
     private void handleOrderFulfilled(PlaceOrderSagaData data, OrderFulfilled reply) {
-        log.info("Saga fulfil OK: orderId={}, type={}, fulfilmentRef={}",
-                data.getOrderId(), reply.getProductType(), reply.getFulfilmentRef());
+        log.info("Saga fulfil OK: orderId={}, type={}, fulfilmentRef={}, validUntil={}",
+                data.getOrderId(), reply.getProductType(), reply.getFulfilmentRef(), reply.getValidUntil());
         data.setFulfilmentRef(reply.getFulfilmentRef());
         data.setTrackingRef(reply.getTrackingRef());
         data.setActivationKey(reply.getActivationKey());
         data.setExternalRef(reply.getExternalRef());
+        data.setValidFrom(reply.getValidFrom());
+        data.setValidUntil(reply.getValidUntil());
     }
 
     private void handleOrderFulfilmentFailed(PlaceOrderSagaData data, OrderFulfilmentFailed reply) {
@@ -534,7 +537,8 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
         }
         log.info("Saga finalize → COMPLETED: orderId={}", data.getOrderId());
         orderCommandService.completeOrder(data.getOrderId(), data.getProductType(),
-                data.getTrackingRef(), data.getActivationKey(), data.getExternalRef());
+                data.getTrackingRef(), data.getActivationKey(), data.getExternalRef(),
+                data.getValidFrom(), data.getValidUntil());
     }
 
     /** Signals the pre-pivot cancel checkpoint wants Eventuate to roll back the saga. */

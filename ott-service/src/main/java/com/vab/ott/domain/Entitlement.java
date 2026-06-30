@@ -36,15 +36,35 @@ public class Entitlement {
     @Column(name = "provisioned_at", nullable = false)
     private Instant provisionedAt = Instant.now();
 
+    /** Benefit validity window supplied by the caller (null until = perpetual). */
+    @Column(name = "valid_from")
+    private Instant validFrom;
+
+    @Column(name = "valid_until")
+    private Instant validUntil;
+
+    @Column(name = "revoked_at")
+    private Instant revokedAt;
+
     protected Entitlement() {}
 
-    public Entitlement(String externalRef, String orderId, String subscriberId, String offerCode) {
+    public Entitlement(String externalRef, String orderId, String subscriberId, String offerCode,
+                       Instant validFrom, Instant validUntil) {
         this.externalRef   = externalRef;
         this.orderId       = orderId;
         this.subscriberId  = subscriberId;
         this.offerCode     = offerCode;
         this.status        = Status.ACTIVE;
         this.provisionedAt = Instant.now();
+        this.validFrom     = validFrom;
+        this.validUntil    = validUntil;
+    }
+
+    /** Idempotent revoke: ACTIVE → REVOKED, stamping revokedAt. A no-op if already revoked. */
+    public void revoke() {
+        if (this.status == Status.REVOKED) return;
+        this.status    = Status.REVOKED;
+        this.revokedAt = Instant.now();
     }
 
     public String  getExternalRef()   { return externalRef; }
@@ -53,4 +73,7 @@ public class Entitlement {
     public String  getOfferCode()     { return offerCode; }
     public Status  getStatus()        { return status; }
     public Instant getProvisionedAt() { return provisionedAt; }
+    public Instant getValidFrom()     { return validFrom; }
+    public Instant getValidUntil()    { return validUntil; }
+    public Instant getRevokedAt()     { return revokedAt; }
 }

@@ -157,5 +157,33 @@ services:
       QUARKUS_PROFILE: dev
       TZ: Asia/Kolkata
 
+  # ── Keycloak — OIDC Provider (DD-29 / §A-1), Postgres-backed ──────────────
+  # The OpenID Provider for federated auth. Phase A-1 ships only the
+  # client-credentials provisioning client (realm 'vab', client 'vab-provisioning',
+  # scope 'ott:provision'). Reuses the LOCAL Postgres — create the DB first via
+  # deploy/postgres-init/03-keycloak-db.sql. Realm imported on start.
+  # Issuer for resource servers: http://localhost:8088/realms/vab
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: vab-keycloak
+    command: ["start-dev", "--import-realm"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://host.docker.internal:5432/keycloak
+      KC_DB_USERNAME: eventuate
+      KC_DB_PASSWORD: eventuate
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      TZ: Asia/Kolkata
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
+
 volumes:
   mongo_data:

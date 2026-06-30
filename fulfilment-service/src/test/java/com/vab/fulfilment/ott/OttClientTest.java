@@ -7,6 +7,8 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE;
 import static org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
@@ -33,7 +35,9 @@ class OttClientTest {
     private void wire(int maxAttempts) {
         RestClient.Builder builder = RestClient.builder();
         server = MockRestServiceServer.bindTo(builder).build();
-        client = new OttClient(builder, "http://ott", maxAttempts, 0L);
+        KeycloakTokenProvider tokens = mock(KeycloakTokenProvider.class);
+        when(tokens.token()).thenReturn("test-token");   // §A-1: interceptor adds a Bearer
+        client = new OttClient(builder, tokens, "http://ott", maxAttempts, 0L);
     }
 
     @Test
@@ -43,7 +47,7 @@ class OttClientTest {
               .andRespond(withSuccess("{\"externalRef\":\"OTT-1\",\"status\":\"ACTIVE\"}",
                       MediaType.APPLICATION_JSON));
 
-        OttClient.Result r = client.provision("ord-1", "sub-1", "OFF-d");
+        OttClient.Result r = client.provision("ord-1", "sub-1", "OFF-d", null, null);
 
         assertThat(r.provisioned()).isTrue();
         assertThat(r.externalRef()).isEqualTo("OTT-1");
@@ -58,7 +62,7 @@ class OttClientTest {
                       .contentType(MediaType.APPLICATION_PROBLEM_JSON)
                       .body("{\"detail\":\"Offer not provisionable: OFF-OTTBAD\"}"));
 
-        OttClient.Result r = client.provision("ord-1", "sub-1", "OFF-OTTBAD");
+        OttClient.Result r = client.provision("ord-1", "sub-1", "OFF-OTTBAD", null, null);
 
         assertThat(r.provisioned()).isFalse();
         assertThat(r.reason()).isEqualTo("PROVISIONING_REJECTED");
@@ -74,7 +78,7 @@ class OttClientTest {
               .andRespond(withStatus(UNPROCESSABLE_ENTITY)
                       .contentType(MediaType.APPLICATION_JSON).body(TRACE_BODY));
 
-        OttClient.Result r = client.provision("ord-1", "sub-1", "OFF-OTTBAD");
+        OttClient.Result r = client.provision("ord-1", "sub-1", "OFF-OTTBAD", null, null);
 
         assertThat(r.provisioned()).isFalse();
         assertThat(r.reason()).isEqualTo("PROVISIONING_REJECTED");
@@ -91,7 +95,7 @@ class OttClientTest {
               .andRespond(withStatus(UNPROCESSABLE_ENTITY)
                       .contentType(MediaType.APPLICATION_PROBLEM_JSON).body("{not valid json"));
 
-        OttClient.Result r = client.provision("ord-1", "sub-1", "OFF-OTTBAD");
+        OttClient.Result r = client.provision("ord-1", "sub-1", "OFF-OTTBAD", null, null);
 
         assertThat(r.detail()).isEqualTo("HTTP 422 UNPROCESSABLE_ENTITY");
         server.verify();
@@ -104,7 +108,7 @@ class OttClientTest {
               .andRespond(withStatus(SERVICE_UNAVAILABLE)
                       .contentType(MediaType.APPLICATION_JSON).body(TRACE_BODY));
 
-        OttClient.Result r = client.provision("ord-1", "sub-1", "OFF-OTTDOWN");
+        OttClient.Result r = client.provision("ord-1", "sub-1", "OFF-OTTDOWN", null, null);
 
         assertThat(r.provisioned()).isFalse();
         assertThat(r.reason()).isEqualTo("PROVISIONING_UNAVAILABLE");

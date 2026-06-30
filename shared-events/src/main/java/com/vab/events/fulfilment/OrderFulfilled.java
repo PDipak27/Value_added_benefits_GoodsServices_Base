@@ -1,36 +1,55 @@
 package com.vab.events.fulfilment;
 
+import com.vab.events.common.EventuateJackson;
+
+import java.time.Instant;
+
 /**
  * Reply: fulfilment succeeded. Carries the {@code productType} and exactly one
  * populated <em>artifact</em> — {@code trackingRef} (PHYSICAL_GOOD),
  * {@code activationKey} (SOFTWARE_LICENSE) or {@code externalRef}
  * (DIGITAL_SUBSCRIPTION) — plus a {@code fulfilmentRef} the cancel compensation
- * can act on.
+ * can act on, and the entitlement validity window ({@code validFrom}/
+ * {@code validUntil}; both null for PHYSICAL_GOOD and for a perpetual benefit).
  */
 public class OrderFulfilled {
-    private String orderId;        // self-correlation for the DD-27 admin re-drive reply consumer
-    private String productType;
-    private String fulfilmentRef;  // handle for CancelFulfilmentCommand (shipmentId / entitlement ref / key)
-    private String trackingRef;
-    private String activationKey;
-    private String externalRef;
+    static { EventuateJackson.register(); }  // Instant fields — enable JavaTimeModule
+
+    private String  orderId;        // self-correlation for the DD-27 admin re-drive reply consumer
+    private String  productType;
+    private String  fulfilmentRef;  // handle for CancelFulfilmentCommand (shipmentId / entitlement ref / key)
+    private String  trackingRef;
+    private String  activationKey;
+    private String  externalRef;
+    private Instant validFrom;      // benefit activation instant (null for PHYSICAL_GOOD)
+    private Instant validUntil;     // benefit expiry (null = perpetual / PHYSICAL_GOOD)
 
     public OrderFulfilled() {}
 
     public OrderFulfilled(String orderId, String productType, String fulfilmentRef,
                           String trackingRef, String activationKey, String externalRef) {
+        this(orderId, productType, fulfilmentRef, trackingRef, activationKey, externalRef, null, null);
+    }
+
+    public OrderFulfilled(String orderId, String productType, String fulfilmentRef,
+                          String trackingRef, String activationKey, String externalRef,
+                          Instant validFrom, Instant validUntil) {
         this.orderId       = orderId;
         this.productType   = productType;
         this.fulfilmentRef = fulfilmentRef;
         this.trackingRef   = trackingRef;
         this.activationKey = activationKey;
         this.externalRef   = externalRef;
+        this.validFrom     = validFrom;
+        this.validUntil    = validUntil;
     }
 
-    public String getOrderId()       { return orderId; }
-    public String getProductType()   { return productType; }
-    public String getFulfilmentRef() { return fulfilmentRef; }
-    public String getTrackingRef()   { return trackingRef; }
-    public String getActivationKey() { return activationKey; }
-    public String getExternalRef()   { return externalRef; }
+    public String  getOrderId()       { return orderId; }
+    public String  getProductType()   { return productType; }
+    public String  getFulfilmentRef() { return fulfilmentRef; }
+    public String  getTrackingRef()   { return trackingRef; }
+    public String  getActivationKey() { return activationKey; }
+    public String  getExternalRef()   { return externalRef; }
+    public Instant getValidFrom()     { return validFrom; }
+    public Instant getValidUntil()    { return validUntil; }
 }

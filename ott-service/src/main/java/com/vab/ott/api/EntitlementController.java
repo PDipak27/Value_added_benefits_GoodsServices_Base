@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -59,13 +60,28 @@ public class EntitlementController {
         }
 
         String externalRef = "OTT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
-        Entitlement e = repo.save(new Entitlement(externalRef, req.orderId(), req.subscriberId(), req.offerCode()));
+        Entitlement e = repo.save(new Entitlement(externalRef, req.orderId(), req.subscriberId(),
+                req.offerCode(), req.validFrom(), req.validUntil()));
         log.info("OTT provisioned: orderId={}, externalRef={}", req.orderId(), externalRef);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(new EntitlementResponse(e.getExternalRef(), e.getStatus().name()));
     }
 
-    public record ProvisionRequest(String orderId, String subscriberId, String offerCode) {}
+    /**
+     * DELETE /ott/v1/entitlements/{externalRef} — admin revoke (Phase 3).
+     * Idempotent: 204 even when the entitlement is missing or already revoked.
+     */
+    @DeleteMapping("/{externalRef}")
+    @Transactional
+    public ResponseEntity<Void> revoke(@PathVariable String externalRef) {
+        repo.findById(externalRef).ifPresentOrElse(
+                e -> { e.revoke(); log.info("OTT entitlement revoked: externalRef={}", externalRef); },
+                () -> log.info("OTT revoke no-op (unknown externalRef={})", externalRef));
+        return ResponseEntity.noContent().build();
+    }
+
+    public record ProvisionRequest(String orderId, String subscriberId, String offerCode,
+                                   Instant validFrom, Instant validUntil) {}
 
     public record EntitlementResponse(String externalRef, String status) {}
 }

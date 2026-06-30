@@ -11,10 +11,11 @@ import org.springframework.web.client.RestClient;
  * client-sent {@code productType} at order placement (Design/09, Q1(b)+verify).
  *
  * <p>Philosophy (DD-20): catalog is the source of truth, but a placement must not
- * be blocked by a transient catalog outage. So {@link #resolveProductType} is
- * best-effort: if catalog is reachable it returns the authoritative value (which
- * the caller uses in preference to the client-sent one); if not, it returns
- * {@code null} and the caller falls back to the client-sent value.
+ * be blocked by a transient catalog outage. So {@link #resolveOffer} is
+ * best-effort: if catalog is reachable it returns the authoritative offer (whose
+ * productType the caller uses in preference to the client-sent one, and whose
+ * termMonths is snapshotted); if not, it returns {@code null} and the caller
+ * falls back to the client-sent productType with a null term.
  */
 @Component
 public class CatalogClient {
@@ -29,22 +30,23 @@ public class CatalogClient {
     }
 
     /**
-     * Best-effort authoritative {@code productType} for an offer.
+     * Best-effort authoritative offer projection — {@code productType} (verified
+     * against the client-sent value) and {@code termMonths} (snapshotted for the
+     * entitlement's validity window).
      *
-     * @return the catalog's productType, or {@code null} if catalog is
-     *         unreachable / the offer is absent (caller falls back).
+     * @return the catalog offer, or {@code null} if catalog is unreachable / the
+     *         offer is absent (caller falls back to client-sent values; term=null).
      */
-    public String resolveProductType(String offerCode) {
+    public OfferDetail resolveOffer(String offerCode) {
         try {
             OfferDetail offer = restClient.get()
                     .uri("/v1/offers/{offerCode}", offerCode)
                     .retrieve()
                     .body(OfferDetail.class);
-            if (offer == null || offer.productType() == null) {
-                log.warn("Catalog returned no productType for offerCode={} — caller will fall back", offerCode);
-                return null;
+            if (offer == null) {
+                log.warn("Catalog returned no offer for offerCode={} — caller will fall back", offerCode);
             }
-            return offer.productType();
+            return offer;
         } catch (Exception e) {
             log.warn("Catalog verify failed for offerCode={} ({}: {}) — caller will fall back",
                     offerCode, e.getClass().getSimpleName(), e.getMessage());
@@ -52,6 +54,6 @@ public class CatalogClient {
         }
     }
 
-    /** Minimal projection of the catalog Offer JSON — only the field we verify. */
-    public record OfferDetail(String productType) {}
+    /** Minimal projection of the catalog Offer JSON — the fields the order side uses. */
+    public record OfferDetail(String productType, Integer termMonths) {}
 }

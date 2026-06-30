@@ -4,20 +4,26 @@ import com.vab.events.order.OrderCancelled;
 import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
 import com.vab.events.order.OrderConfirmed;
+import com.vab.events.order.OrderEntitlementRevoked;
 import com.vab.events.order.OrderFailed;
 import com.vab.events.order.OrderFulfilmentFailed;
 import com.vab.events.order.OrderPlaced;
 import com.vab.order.command.domain.Order;
+import com.vab.order.query.document.EntitlementView;
 import com.vab.order.query.document.OrderView;
+import com.vab.order.query.repository.EntitlementViewRepository;
 import com.vab.order.query.repository.OrderViewRepository;
 import io.eventuate.tram.events.subscriber.DomainEventEnvelope;
 import io.eventuate.tram.events.subscriber.DomainEventHandlers;
 import io.eventuate.tram.events.subscriber.DomainEventHandlersBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * Read-side projector — consumes Order domain events from Kafka (relayed from
@@ -37,10 +43,15 @@ public class OrderProjector {
 
     private static final Logger log = LoggerFactory.getLogger(OrderProjector.class);
 
-    private final OrderViewRepository repo;
+    /** Product types that materialise an entitlement ("benefit"). */
+    private static final Set<String> BENEFIT_TYPES = Set.of("DIGITAL_SUBSCRIPTION", "SOFTWARE_LICENSE");
 
-    public OrderProjector(OrderViewRepository repo) {
-        this.repo = repo;
+    private final OrderViewRepository       repo;
+    private final EntitlementViewRepository entRepo;
+
+    public OrderProjector(OrderViewRepository repo, EntitlementViewRepository entRepo) {
+        this.repo    = repo;
+        this.entRepo = entRepo;
     }
 
     /** Handler registration consumed by the DomainEventDispatcher bean. */
@@ -54,6 +65,7 @@ public class OrderProjector {
                 .onEvent(OrderCancelledRefunded.class, this::onCancelledRefunded)
                 .onEvent(OrderFailed.class, this::onFailed)
                 .onEvent(OrderFulfilmentFailed.class, this::onFulfilmentFailed)
+                .onEvent(OrderEntitlementRevoked.class, this::onEntitlementRevoked)
                 .build();
     }
 
@@ -135,7 +147,69 @@ public class OrderProjector {
             view.addTimelineEntry(event.getCompletedAt(), "COMPLETED");
             repo.save(view);
             log.info("Saved OrderView (COMPLETED): orderId={}", orderId);
+            activateEntitlement(orderId, view, event);
         }, () -> log.warn("OrderCompleted for unknown orderId={} (no view yet)", orderId));
+    }
+
+    /**
+     * Materialise/refresh the subscriber's entitlement for a completed benefit order
+     * (DIGITAL_SUBSCRIPTION / SOFTWARE_LICENSE). Idempotent on {@code sourceOrderId}
+     * with the same monotonic version guard; the partial unique index is the
+     * cross-order safety net (a DuplicateKey just means another active entitlement
+     * for this subscriber+offer already exists).
+     */
+    private void activateEntitlement(String orderId, OrderView view, OrderCompleted event) {
+        if (!BENEFIT_TYPES.contains(event.getProductType())) return;
+        entRepo.findBySourceOrderId(orderId).ifPresentOrElse(ent -> {
+            if (event.getVersion() <= ent.getVersion()) return;   // stale redelivery
+            applyActive(ent, view, event);
+            entRepo.save(ent);
+            log.info("Refreshed entitlement (ACTIVE): orderId={}, offerCode={}", orderId, view.getOfferCode());
+        }, () -> {
+            EntitlementView ent = new EntitlementView();
+            ent.setEntitlementId("ent_" + UUID.randomUUID().toString().replace("-", ""));
+            ent.setSourceOrderId(orderId);
+            applyActive(ent, view, event);
+            try {
+                entRepo.save(ent);
+                log.info("Activated entitlement: orderId={}, offerCode={}, subscriberId={}",
+                        orderId, view.getOfferCode(), view.getSubscriberId());
+            } catch (DuplicateKeyException dup) {
+                log.warn("Active entitlement already exists for subscriberId={}, offerCode={} — skipping (orderId={})",
+                        view.getSubscriberId(), view.getOfferCode(), orderId);
+            }
+        });
+    }
+
+    private static void applyActive(EntitlementView ent, OrderView view, OrderCompleted event) {
+        ent.setSubscriberId(view.getSubscriberId());
+        ent.setOfferCode(view.getOfferCode());
+        ent.setProductType(event.getProductType());
+        ent.setStatus("ACTIVE");
+        ent.setExternalRef(event.getExternalRef());
+        ent.setActivationKey(event.getActivationKey());
+        ent.setActivatedAt(event.getCompletedAt());
+        ent.setValidFrom(event.getValidFrom());
+        ent.setValidUntil(event.getValidUntil());
+        ent.setVersion(event.getVersion());
+    }
+
+    /** Admin revoke (Phase 3): flip the entitlement to REVOKED (frees the uniqueness slot). */
+    void onEntitlementRevoked(DomainEventEnvelope<OrderEntitlementRevoked> de) {
+        String orderId = de.getAggregateId();
+        long   version = de.getEvent().getVersion();
+        log.info("Projecting OrderEntitlementRevoked: orderId={}, version={}", orderId, version);
+        entRepo.findBySourceOrderId(orderId).ifPresent(ent -> {
+            if (version <= ent.getVersion()) {
+                log.info("Skipping stale revoke: orderId={}, incoming={}, current={}",
+                        orderId, version, ent.getVersion());
+                return;
+            }
+            ent.setStatus("REVOKED");
+            ent.setVersion(version);
+            entRepo.save(ent);
+            log.info("Entitlement REVOKED in read model: orderId={}, offerCode={}", orderId, ent.getOfferCode());
+        });
     }
 
     void onCancelled(DomainEventEnvelope<OrderCancelled> de) {

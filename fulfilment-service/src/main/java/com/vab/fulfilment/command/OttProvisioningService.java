@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -36,8 +37,9 @@ public class OttProvisioningService {
     }
 
     @Transactional
-    public ProvisionResult provision(String orderId, String subscriberId, String offerCode) {
-        OttClient.Result r = ott.provision(orderId, subscriberId, offerCode);
+    public ProvisionResult provision(String orderId, String subscriberId, String offerCode,
+                                     Instant validFrom, Instant validUntil) {
+        OttClient.Result r = ott.provision(orderId, subscriberId, offerCode, validFrom, validUntil);
         if (!r.provisioned()) {
             return new ProvisionResult(false, null, null, r.reason(), r.detail());
         }
@@ -47,5 +49,12 @@ public class OttProvisioningService {
         log.info("Provisioned DIGITAL_SUBSCRIPTION: orderId={}, entitlement={}, externalRef={}",
                 orderId, fulfilmentRef, r.externalRef());
         return new ProvisionResult(true, fulfilmentRef, r.externalRef(), null, null);
+    }
+
+    /** Admin revoke (Phase 3): delegate to OTT DELETE. Returns false on any error. */
+    public boolean revoke(String externalRef) {
+        boolean ok = ott.revoke(externalRef);
+        log.info("OTT entitlement revoke: externalRef={}, ok={}", externalRef, ok);
+        return ok;
     }
 }

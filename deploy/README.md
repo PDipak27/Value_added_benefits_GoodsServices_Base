@@ -29,6 +29,13 @@ GRANT CREATE ON SCHEMA public TO eventuate;
 psql -U eventuate -d vab -f deploy/postgres-init/01-eventuate-schema.sql
 ```
 
+### 2.1 Create the Keycloak database (§A-1 / DD-29)
+
+```bash
+# CREATE DATABASE can't run in a transaction block — run as superuser:
+psql -U postgres -f deploy/postgres-init/03-keycloak-db.sql
+```
+
 ---
 
 
@@ -46,6 +53,7 @@ Services started:
 | vab-cdc       | 8080      | Eventuate CDC (Polling → Kafka, 2 pipelines)   |
 | vab-mongo     | 27017     | MongoDB read projections                       |
 | vab-apicurio  | 8090      | Schema registry (dev; container :8080 → :8090) |
+| vab-keycloak  | 8088      | OIDC Provider (Keycloak, Postgres-backed) — realm `vab` (§A-1) |
 
 Check CDC is up:
 ```bash
@@ -83,8 +91,22 @@ verification — order-service is fail-open if it's down); 7 to exercise routing
 > The gateway (8080) routes `/v1/offers/**` → catalog (8085) and
 > `/v1/orders/**`, `/v1/entitlements/**` → order-service (8081). Inventory,
 > billing and notification are internal (saga participants / event consumers)
-> and are intentionally not routed. JWT validation and the OIDC provider
-> endpoints are deferred to a later iteration.
+> and are intentionally not routed.
+>
+> **Auth (§A-1, DD-29):** the OIDC Provider is **Keycloak** (`vab-keycloak`, :8088,
+> realm `vab`), brought up by `docker-compose`. ott-service is now an OAuth2
+> **resource server** — start **Keycloak before ott-service** (issuer discovery is
+> eager). The fulfilment → OTT provisioning/revoke calls attach a Keycloak
+> client-credentials Bearer (`vab-provisioning` / scope `ott:provision`)
+> automatically.
+>
+> **Subscriber login (§A-2):** ott-service is *also* a server-side OIDC **login
+> client** (public client `vab-ott`, Authorization Code + PKCE). Browse the catalog
+> at `http://localhost:8087/v1/videos` — you'll be redirected to the Keycloak login.
+> Sign in as the seeded demo user **`alice` / `alice`** (carries `subscriberId=sub-alice`,
+> which owns `OTT_HOTSTAR_3M` via a seed row), then `GET /v1/videos/vid_hotstar_ipl/stream`
+> returns `"Playing video: …"` while `…/vid_netflix_film/stream` returns `403`.
+> Gateway edge JWT auth arrives in A‑3.
 
 ---
 

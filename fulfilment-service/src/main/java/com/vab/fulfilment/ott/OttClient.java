@@ -33,21 +33,29 @@ public class OttClient {
     private final long retryDelayMs;
 
     public OttClient(RestClient.Builder builder,
+                     KeycloakTokenProvider tokenProvider,
                      @Value("${ott.base-url:http://localhost:8087}") String baseUrl,
                      @Value("${ott.max-attempts:3}") int maxAttempts,
                      @Value("${ott.retry-delay-ms:200}") long retryDelayMs) {
-        this.restClient   = builder.baseUrl(baseUrl).build();
+        // §A-1: every call to the secured ott-service carries a Keycloak Bearer token.
+        this.restClient   = builder.baseUrl(baseUrl)
+                .requestInterceptor((request, body, execution) -> {
+                    request.getHeaders().setBearerAuth(tokenProvider.token());
+                    return execution.execute(request, body);
+                })
+                .build();
         this.maxAttempts  = maxAttempts;
         this.retryDelayMs = retryDelayMs;
     }
 
-    public Result provision(String orderId, String subscriberId, String offerCode) {
+    public Result provision(String orderId, String subscriberId, String offerCode,
+                            java.time.Instant validFrom, java.time.Instant validUntil) {
         String lastDetail = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 EntitlementResponse resp = restClient.post()
                         .uri("/ott/v1/entitlements")
-                        .body(new ProvisionRequest(orderId, subscriberId, offerCode))
+                        .body(new ProvisionRequest(orderId, subscriberId, offerCode, validFrom, validUntil))
                         .retrieve()
                         .body(EntitlementResponse.class);
                 log.info("OTT provision OK: orderId={}, externalRef={}, attempt={}",
@@ -69,6 +77,21 @@ public class OttClient {
         }
         log.warn("OTT provision UNAVAILABLE after {} attempts: orderId={}", maxAttempts, orderId);
         return new Result(false, null, "PROVISIONING_UNAVAILABLE", lastDetail);
+    }
+
+    /** Admin revoke (Phase 3): DELETE the OTT entitlement. Idempotent at OTT; false on any error. */
+    public boolean revoke(String externalRef) {
+        try {
+            restClient.delete()
+                    .uri("/ott/v1/entitlements/{ref}", externalRef)
+                    .retrieve()
+                    .toBodilessEntity();
+            log.info("OTT revoke OK: externalRef={}", externalRef);
+            return true;
+        } catch (Exception e) {
+            log.warn("OTT revoke failed: externalRef={}, {}", externalRef, shortDetail(e));
+            return false;
+        }
     }
 
     private void sleep() {
@@ -111,6 +134,7 @@ public class OttClient {
         }
     }
 
-    private record ProvisionRequest(String orderId, String subscriberId, String offerCode) {}
+    private record ProvisionRequest(String orderId, String subscriberId, String offerCode,
+                                    java.time.Instant validFrom, java.time.Instant validUntil) {}
     private record EntitlementResponse(String externalRef, String status) {}
 }

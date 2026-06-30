@@ -59,6 +59,7 @@ Responses:
 | `GET` | `/v1/orders/{orderId}` | Detail with `timeline` array |
 | `GET` | `/v1/orders/{orderId}/timeline` | Timeline only (audit view) |
 | `GET` | `/v1/entitlements` | Subscriber's active benefits ("My Benefits" screen) |
+| `GET` | `/v1/ops/orders` | Ops dashboard search over `order_search_v1`. Filters: `status`, `offerCode`, `from`, `to`, `limit` (§B3) |
 
 Sample `GET /v1/orders/{orderId}` response:
 ```json
@@ -84,15 +85,28 @@ Sample `GET /v1/orders/{orderId}` response:
 
 ---
 
-## OIDC endpoints (Gateway as OpenID Provider)
+## OIDC endpoints (OpenID Provider = self-hosted Keycloak, DD-29)
+
+Provided by **Keycloak's `vab` realm**, not by the gateway (the gateway is an edge resource server, not the OP).
 
 | Path | Purpose |
 |---|---|
-| `GET /oidc/authorize` | Authorization Code + PKCE start |
-| `POST /oidc/token` | Token exchange |
-| `GET /oidc/userinfo` | ID claims for the Relying Party (OTT) |
-| `GET /oidc/.well-known/openid-configuration` | Discovery document |
-| `GET /oidc/jwks` | Public keys |
+| `GET /realms/vab/protocol/openid-connect/auth` | Authorization Code + PKCE start |
+| `POST /realms/vab/protocol/openid-connect/token` | Token exchange (auth-code + PKCE / client-credentials) |
+| `GET /realms/vab/protocol/openid-connect/userinfo` | ID claims for the Relying Party (OTT) |
+| `GET /realms/vab/.well-known/openid-configuration` | Discovery document |
+| `GET /realms/vab/protocol/openid-connect/certs` | JWKS public keys |
+
+---
+
+## OTT subscriber surface (§A-2)
+
+Served by ott-service, protected by **OIDC login** (Authorization Code + PKCE, session) — not the Bearer provisioning API. The subscriber is identified by the `subscriberId` id-token claim.
+
+| Method / Path | Auth | Notes |
+|---|---|---|
+| `GET /v1/videos` | Session (logged-in subscriber) | Seeded catalog: `[{id, title, offerCode}]` |
+| `GET /v1/videos/{id}/stream` | Session + entitlement | `200 {"message":"Playing video: <title>"}` if an ACTIVE entitlement for the video's `offerCode` exists; `403` otherwise; `404` unknown id. No real media. |
 
 ---
 
@@ -100,9 +114,9 @@ Sample `GET /v1/orders/{orderId}` response:
 
 | Caller | Path | Auth | Notes |
 |---|---|---|---|
-| Order Saga → OTT | `POST /admin/entitlements` | OAuth2 client credentials | Provision entitlement after order success |
-| Order Saga → OTT | `DELETE /admin/entitlements/{externalRef}` | OAuth2 client credentials | Compensation (revoke) |
-| OTT → Gateway | `GET /oidc/userinfo` | Bearer access token | OTT verifies subscriber identity |
+| Order Saga → OTT | `POST /ott/v1/entitlements` | OAuth2 client credentials (scope `ott:provision`, `aud: ott-service`) | Provision entitlement after order success (as-built path; the original design wrote `/admin/entitlements`) |
+| Order Saga → OTT | `DELETE /ott/v1/entitlements/{...}` | OAuth2 client credentials | Compensation (revoke) |
+| OTT → Keycloak | `GET /realms/vab/protocol/openid-connect/userinfo` | Bearer access token | OTT verifies subscriber identity |
 
 `POST /admin/entitlements` body:
 ```json

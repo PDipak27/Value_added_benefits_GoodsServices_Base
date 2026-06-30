@@ -2,6 +2,7 @@ package com.vab.order.command.fulfilment;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.vab.events.fulfilment.FulfilOrderCommand;
 import com.vab.events.fulfilment.OrderFulfilled;
 import com.vab.events.fulfilment.OrderProvisioningFailed;
@@ -12,10 +13,11 @@ import io.eventuate.tram.commands.common.ReplyMessageHeaders;
 import io.eventuate.tram.commands.producer.CommandProducer;
 import io.eventuate.tram.messaging.common.Message;
 import io.eventuate.tram.messaging.consumer.MessageConsumer;
-import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
@@ -45,6 +47,7 @@ public class FulfilmentReDrive {
     private final MessageConsumer     messageConsumer;
     private final OrderCommandService orderCommandService;
     private final ObjectMapper        json = new ObjectMapper()
+            .registerModule(new JavaTimeModule())   // OrderFulfilled carries Instant validFrom/validUntil
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     public FulfilmentReDrive(CommandProducer commandProducer,
@@ -55,7 +58,12 @@ public class FulfilmentReDrive {
         this.orderCommandService = orderCommandService;
     }
 
-    @PostConstruct
+    // Subscribe only once the context is fully built — NOT @PostConstruct. Because
+    // OrderCommandService depends on this bean, @PostConstruct would start the consumer
+    // before OrderCommandService exists; a backlogged reply could then invoke the @Lazy
+    // proxy mid-creation → BeanCurrentlyInCreationException → the swimlane terminates and
+    // the consumer leaves the group for good.
+    @EventListener(ApplicationReadyEvent.class)
     void subscribe() {
         messageConsumer.subscribe(SUBSCRIBER_ID, Set.of(REPLY_CHANNEL), this::onReply);
     }
@@ -67,7 +75,7 @@ public class FulfilmentReDrive {
      */
     public void reDrive(Order order) {
         FulfilOrderCommand cmd = new FulfilOrderCommand(order.getId(), order.getSubscriberId(),
-                order.getOfferCode(), order.getProductType(), order.getActivationKey());
+                order.getOfferCode(), order.getProductType(), order.getActivationKey(), order.getTermMonths());
         commandProducer.send(PlaceOrderSaga.FULFILMENT_CHANNEL, cmd, REPLY_CHANNEL, Map.of());
         log.info("Re-drive command sent: orderId={}, productType={}", order.getId(), order.getProductType());
     }
@@ -77,7 +85,8 @@ public class FulfilmentReDrive {
         if (OrderFulfilled.class.getName().equals(replyType)) {
             OrderFulfilled r = read(message, OrderFulfilled.class);
             log.info("Re-drive reply OK: orderId={}, externalRef={}", r.getOrderId(), r.getExternalRef());
-            orderCommandService.completeFromReDrive(r.getOrderId(), r.getExternalRef());
+            orderCommandService.completeFromReDrive(r.getOrderId(), r.getExternalRef(),
+                    r.getValidFrom(), r.getValidUntil());
         } else if (OrderProvisioningFailed.class.getName().equals(replyType)) {
             OrderProvisioningFailed r = read(message, OrderProvisioningFailed.class);
             log.warn("Re-drive reply FAILED (stays parked): orderId={}, reason={}", r.getOrderId(), r.getReason());

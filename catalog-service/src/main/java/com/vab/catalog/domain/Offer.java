@@ -48,6 +48,13 @@ public class Offer {
 
     private KycLevel minKycLevel;
 
+    /**
+     * Benefit term in months for DIGITAL_SUBSCRIPTION / SOFTWARE_LICENSE
+     * (null = no term / perpetual / PHYSICAL_GOOD). Orders snapshot it at
+     * placement; fulfilment turns it into the entitlement's validUntil.
+     */
+    private Integer termMonths;
+
     protected Offer() {}  // Mongo mapping
 
     public Offer(String offerCode, String name, String description, ProductType productType,
@@ -86,4 +93,8 @@ public class Offer {
     public String      getAllowedRegions()    { return allowedRegions; }
     public Integer     getMaxDeviceAgeMonths(){ return maxDeviceAgeMonths; }
     public KycLevel    getMinKycLevel()       { return minKycLevel; }
+    public Integer     getTermMonths()        { return termMonths; }
+
+    /** Set the benefit term (DIGITAL_SUBSCRIPTION / SOFTWARE_LICENSE). */
+    public Offer withTermMonths(Integer termMonths) { this.termMonths = termMonths; return this; }
 }

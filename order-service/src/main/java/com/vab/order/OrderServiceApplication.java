@@ -2,6 +2,7 @@ package com.vab.order;
 
 import com.vab.events.common.EventuateJackson;
 import com.vab.order.query.projection.OrderProjector;
+import com.vab.order.query.projection.OrderSearchProjector;
 import io.eventuate.tram.events.subscriber.DomainEventDispatcher;
 import io.eventuate.tram.events.subscriber.DomainEventDispatcherFactory;
 import io.eventuate.tram.spring.events.publisher.TramEventsPublisherConfiguration;
@@ -40,5 +41,18 @@ public class OrderServiceApplication {
             OrderProjector projector,
             DomainEventDispatcherFactory factory) {
         return factory.make("orderServiceProjector", projector.domainEventHandlers());
+    }
+
+    /**
+     * Ops-search projector as a second, independent Tram domain-event dispatcher
+     * (§B3). Its own dispatcher id ("orderSearchProjector") is a distinct Kafka
+     * consumer group, so order_search_v1 is built from the same event stream as
+     * orders_v1 but consumed and rebuildable independently.
+     */
+    @Bean
+    public DomainEventDispatcher orderSearchDomainEventDispatcher(
+            OrderSearchProjector projector,
+            DomainEventDispatcherFactory factory) {
+        return factory.make("orderSearchProjector", projector.domainEventHandlers());
     }
 }

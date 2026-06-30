@@ -16,7 +16,7 @@ class OrderHappyPathE2E extends E2EBase {
 
     @Test
     void physical_good_pay_now_completes_with_tracking_ref() {
-        String orderId = placeOrder("sub-e2e", "ACC_BUDS_PRO", "PHYSICAL_GOOD", 499, "PAY_NOW");
+        String orderId = placeOrder(sub(), "ACC_BUDS_PRO", "PHYSICAL_GOOD", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
         given().baseUri(ORDER).get("/v1/orders/{id}", orderId)
@@ -28,7 +28,7 @@ class OrderHappyPathE2E extends E2EBase {
 
     @Test
     void software_license_pay_now_completes_with_activation_key() {
-        String orderId = placeOrder("sub-e2e", "SW_MSOFFICE_1Y", "SOFTWARE_LICENSE", 499, "PAY_NOW");
+        String orderId = placeOrder(sub(), "SW_MSOFFICE_1Y", "SOFTWARE_LICENSE", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
         given().baseUri(ORDER).get("/v1/orders/{id}", orderId)
@@ -40,7 +40,7 @@ class OrderHappyPathE2E extends E2EBase {
 
     @Test
     void digital_subscription_pay_now_completes_with_external_ref() {
-        String orderId = placeOrder("sub-e2e", "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+        String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
         given().baseUri(ORDER).get("/v1/orders/{id}", orderId)
@@ -52,7 +52,7 @@ class OrderHappyPathE2E extends E2EBase {
 
     @Test
     void digital_subscription_bill_to_mobile_completes() {
-        String orderId = placeOrder("sub-e2e", "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "BILL_TO_MOBILE");
+        String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "BILL_TO_MOBILE");
         awaitStatus(orderId, "COMPLETED");
 
         given().baseUri(ORDER).get("/v1/orders/{id}", orderId)

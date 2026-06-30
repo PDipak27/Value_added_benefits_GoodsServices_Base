@@ -15,7 +15,7 @@
 | Read / document store | **MongoDB 7** — Order read-model projections **and** the Catalog store (DD-16) | Document model suits denormalized order projections; also fits polymorphic, often-changing offer documents (Catalog is its own `vab_catalog` database) |
 | Catalog read-cache | **Caffeine L1 (in-process) + Redis 7 L2 (shared)** — two-tier (DD-17 / DD-18 / DD-19 / DD-20) | Read-heavy, write-rare catalog; L1 avoids re-deserializing ~5000 offers per browse, L2 backstops L1 misses. Invalidation is local evict-on-write + a Redis pub/sub broadcast that clears peer L1s (skip-self, DD-19); 15s TTL on both tiers is the backstop (not event-driven — writer and cache are the same service). **Fail-open:** a Redis outage degrades reads/writes to Mongo, never an error — `CacheErrorHandler` logs + swallows, 500ms Redis timeouts (DD-20) |
 | Schema registry | **Apicurio** (OSS, in-memory for dev) | Same REST API as Confluent SR; zero license cost |
-| OIDC Provider | Spring Authorization Server (iteration 6+) | Production-grade; not hand-rolled |
+| OIDC Provider | **Self-hosted Keycloak** (DD-29) — own container + DB, `vab` realm via import | Full open-source IdP (realms, user mgmt + registration, login UI, credential flows, admin console); the gateway is a resource server, not the OP |
 | Observability | OTel → Loki + Grafana | Existing repo wiring |
 | Tracing | W3C `traceparent` in HTTP headers + Kafka message headers | Traces cross sync + async hops |
 

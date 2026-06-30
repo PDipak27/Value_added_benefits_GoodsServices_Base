@@ -18,6 +18,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
@@ -69,7 +70,7 @@ class FulfilmentCommandHandlersTest {
         void digital_subscription_delegates_to_ott_and_echoes_external_ref() {
             // DD-27: digital provisioning is delegated; the record is written by
             // OttProvisioningService, so the handler only relays the result.
-            when(ottProvisioning.provision("ord-1", "sub-1", "OFF-d"))
+            when(ottProvisioning.provision(eq("ord-1"), eq("sub-1"), eq("OFF-d"), any(), any()))
                     .thenReturn(new OttProvisioningService.ProvisionResult(
                             true, "ent_x", "OTT-ABC123", null, null));
 
@@ -85,7 +86,7 @@ class FulfilmentCommandHandlersTest {
         void digital_provisioning_failure_parks_with_provisioning_failed() {
             // DD-27: an OTT failure replies OrderProvisioningFailed (success-outcome,
             // park — never a rollback) and is distinct from OrderFulfilmentFailed.
-            when(ottProvisioning.provision("ord-1", "sub-1", "OFF-d"))
+            when(ottProvisioning.provision(eq("ord-1"), eq("sub-1"), eq("OFF-d"), any(), any()))
                     .thenReturn(new OttProvisioningService.ProvisionResult(
                             false, null, null, "PROVISIONING_UNAVAILABLE", "503"));
 
@@ -105,6 +106,27 @@ class FulfilmentCommandHandlersTest {
             OrderFulfilled body = Replies.assertSuccess(reply, OrderFulfilled.class);
             assertThat(body.getActivationKey()).isEqualTo("KEY-1");
             assertThat(savedRecord().getActivationKey()).isEqualTo("KEY-1");
+        }
+
+        @Test
+        void benefit_with_a_term_sets_a_validity_window() {
+            // termMonths=3 → validFrom=now, validUntil≈now+3mo (Phase 2).
+            Message reply = handlers.fulfil(cmd(new FulfilOrderCommand(
+                    "ord-1", "sub-1", "OFF-l", "SOFTWARE_LICENSE", "KEY-1", 3)));
+
+            OrderFulfilled body = Replies.assertSuccess(reply, OrderFulfilled.class);
+            assertThat(body.getValidFrom()).isNotNull();
+            assertThat(body.getValidUntil()).isNotNull();
+            assertThat(body.getValidUntil()).isAfter(body.getValidFrom());
+        }
+
+        @Test
+        void benefit_without_a_term_is_perpetual() {
+            Message reply = handlers.fulfil(cmd(new FulfilOrderCommand(
+                    "ord-1", "sub-1", "OFF-l", "SOFTWARE_LICENSE", "KEY-1", null)));
+
+            OrderFulfilled body = Replies.assertSuccess(reply, OrderFulfilled.class);
+            assertThat(body.getValidUntil()).isNull();   // null = perpetual
         }
 
         @Test
@@ -180,6 +202,41 @@ class FulfilmentCommandHandlersTest {
 
             Replies.assertSuccessOutcome(reply);
             verify(records, never()).save(any());
+        }
+    }
+
+    @Nested
+    class RevokeEntitlement {
+
+        @Test
+        void digital_revoke_calls_ott_and_replies_revoked() {
+            when(ottProvisioning.revoke("OTT-1")).thenReturn(true);
+
+            Message reply = handlers.revokeEntitlement(cmd(new RevokeEntitlementCommand(
+                    "ord-1", "DIGITAL_SUBSCRIPTION", "OTT-1")));
+
+            assertThat(Replies.assertSuccess(reply, EntitlementRevoked.class).getOrderId()).isEqualTo("ord-1");
+            verify(ottProvisioning).revoke("OTT-1");
+        }
+
+        @Test
+        void digital_revoke_ott_failure_replies_revoke_failed() {
+            when(ottProvisioning.revoke("OTT-1")).thenReturn(false);
+
+            Message reply = handlers.revokeEntitlement(cmd(new RevokeEntitlementCommand(
+                    "ord-1", "DIGITAL_SUBSCRIPTION", "OTT-1")));
+
+            assertThat(Replies.assertSuccess(reply, EntitlementRevokeFailed.class).getReason())
+                    .isEqualTo("OTT_REVOKE_FAILED");
+        }
+
+        @Test
+        void license_revoke_is_read_model_only() {
+            Message reply = handlers.revokeEntitlement(cmd(new RevokeEntitlementCommand(
+                    "ord-1", "SOFTWARE_LICENSE", null)));
+
+            assertThat(Replies.assertSuccess(reply, EntitlementRevoked.class).getOrderId()).isEqualTo("ord-1");
+            verify(ottProvisioning, never()).revoke(any());
         }
     }
 }

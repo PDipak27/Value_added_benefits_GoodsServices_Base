@@ -21,21 +21,29 @@ public class FulfilOrderCommand implements Command {
     private String offerCode;
     private String productType;
     private String activationKey; // pre-allocated by inventory for SOFTWARE_LICENSE; null otherwise
+    private Integer termMonths;   // benefit term (DIGITAL_SUBSCRIPTION / SOFTWARE_LICENSE); null = no term
 
     public FulfilOrderCommand() {}
 
     public FulfilOrderCommand(String orderId, String subscriberId, String offerCode,
                               String productType, String activationKey) {
+        this(orderId, subscriberId, offerCode, productType, activationKey, null);
+    }
+
+    public FulfilOrderCommand(String orderId, String subscriberId, String offerCode,
+                              String productType, String activationKey, Integer termMonths) {
         this.orderId       = orderId;
         this.subscriberId  = subscriberId;
         this.offerCode     = offerCode;
         this.productType   = productType;
         this.activationKey = activationKey;
+        this.termMonths    = termMonths;
     }
 
-    public String getOrderId()       { return orderId; }
-    public String getSubscriberId()  { return subscriberId; }
-    public String getOfferCode()     { return offerCode; }
-    public String getProductType()   { return productType; }
-    public String getActivationKey() { return activationKey; }
+    public String  getOrderId()       { return orderId; }
+    public String  getSubscriberId()  { return subscriberId; }
+    public String  getOfferCode()     { return offerCode; }
+    public String  getProductType()   { return productType; }
+    public String  getActivationKey() { return activationKey; }
+    public Integer getTermMonths()    { return termMonths; }
 }

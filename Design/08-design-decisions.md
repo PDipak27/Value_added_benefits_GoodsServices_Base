@@ -668,3 +668,46 @@ FULFILMENT_FAILED  (admin fixes external OTT, then…)
 **5. No `spring-boot-devtools`.** DevTools' hot-restart (`restartedMain` classloader) intermittently breaks Eventuate Tram's saga reply-channel / Kafka consumer subscription — the saga keeps *sending* commands but stops *consuming* replies, so orders stall right after the first step (looks like a CDC stall but isn't). It is therefore **kept out of all apps**; backend code changes use a full rebuild + restart.
 
 **Tests added (DD-25 style — pure JUnit 5 / Mockito / AssertJ, plus MockMvc and `MockRestServiceServer`; no containers):** `OttClientTest` — a provider error body (even a stack trace) never leaks into `detail`; `422` is not retried while `5xx` is; content-type-gated `ProblemDetail` extraction with a malformed-body fallback. `GlobalExceptionHandlerTest` — status mapping per exception, body carries no internals, and framework client errors stay `4xx`.
+
+---
+
+## DD-29 — Keycloak (self-hosted) is the OIDC Provider — not Spring Authorization Server, not a hand-rolled issuer  *(the OP behind backlog §A; the gateway stays Spring Cloud Gateway as an edge resource server, no longer the OP)*
+
+**Problem:** DD-09 chose **OIDC** as the *protocol*; Design/06 needs an OpenID Provider for (a) **subscriber login** — Authorization Code + PKCE, OTT as Relying Party — and (b) **machine-to-machine provisioning** — `client_credentials` for fulfilment → OTT (DD-27 / §A4). The deciding factor is **how much of an identity platform we actually need**: not merely *issuing tokens*, but **user lifecycle** — registration, a login/credential UI, a user store, password flows, realms, and an admin console — none of which we want to hand-build.
+
+**Options:**
+- **A) Hand-roll the OP** — the "custom JWT issuer" security anti-pattern; reimplements OIDC by hand. Rejected.
+- **B) Spring Authorization Server, embedded in the gateway** — a real, in-process OIDC OP with no extra container. But it is an **authorization server, not an identity platform**: by design it ships **no** user registration, **no** login/consent UI, **no** user-management/admin console, and **no** account store — you build the user store, login pages, registration, and credential flows yourself.
+- **C) Keycloak, self-hosted** — a full open-source IdP: realms, a user store + self-service registration, ready-made login/consent/account pages, password/OTP/social credential flows, and an admin console — running as its own container behind standard OIDC discovery/JWKS.
+
+**Choice:** **C** — Keycloak, self-hosted.
+
+**Rationale:** The requirement is **identity management, not just token issuance**. Keycloak delivers realms, the user store + registration, the login/consent UI, credential flows, and an admin console **out of the box** — precisely the pieces Spring Authorization Server would force us to build (login pages, user storage, credential flows) for no learning payoff. It is **open-source and self-hostable** (no SaaS lock-in), speaks standard OIDC (RPs and resource servers integrate via `issuer-uri` + JWKS with zero bespoke glue), and supports both grant types we need. The cost — a Keycloak container + its DB — is now **justified by wanting those platform features**, which reframes an earlier lean toward an embedded server (defensible only if the need were *just* tokens). The telco↔OTT narrative is unchanged and arguably more realistic: the **carrier runs an IdP (Keycloak)** and the gateway enforces its tokens.
+
+**Consequences / what this commits to (implementation is backlog §A):**
+- **The gateway is no longer the OP.** `api-gateway` stays **Spring Cloud Gateway** and becomes an **edge OAuth2 resource server** — validating Keycloak-issued JWTs via JWKS and relaying the token downstream. Its `spring-boot-starter-oauth2-authorization-server` dependency is **dropped** in favour of `spring-boot-starter-oauth2-resource-server` (plus `oauth2-client` only if the gateway ever brokers login).
+- **New infra:** a `keycloak` service in `docker-compose.yml` + its database (a dedicated db/schema on the existing Postgres, or Keycloak dev-mode for local). The `vab` realm, its clients, and demo users are provisioned by a **realm-import JSON** so the demo stays `docker-compose up`-able.
+- **OP endpoints are Keycloak's realm endpoints** (`/realms/vab/protocol/openid-connect/{auth,token,userinfo,certs}` + `/.well-known/openid-configuration`); the earlier `/oidc/*`-on-gateway paths sketched in Design/05–06 are superseded by these.
+- **The §A6 scope/claim contract is configured *in* Keycloak** (client scopes + protocol mappers — e.g. an `msisdn_hash` mapper), not coded in an embedded server.
+- **Clients:** an **OTT relying-party** (public, auth-code + PKCE) and a **provisioning client** (confidential, `client_credentials`, `scope=ott:provision`). Resource servers (gateway edge, `ott-service`, OTT) trust the Keycloak issuer.
+- The **protocol** decision (OIDC, DD-09) is unchanged; only the *implementation* is Keycloak. This revises the Spring-Authorization-Server mention in DD-09's note and Design/06–07 (now updated).
+
+---
+
+## DD-30 — OTT plays the Relying Party as a server-side OIDC **login** web app (session), not a Bearer resource server  *(backlog §A-2; ott-service hosts both OAuth2 roles via two filter chains)*
+
+**Problem:** §A-2 wants the subscriber's **Authorization Code + PKCE** federated login demonstrated against Keycloak, with OTT's video surface (`GET /v1/videos`, `GET /v1/videos/{id}/stream`) gated on the local entitlement. But `ott-service` is a **backend with no video UI** — and it is *already* a Bearer **resource server** for the §A-1 machine-to-machine provisioning API (`/ott/v1/entitlements/**`). So "how does OTT consume the subscriber's identity?" is a real fork, not a given.
+
+**Options:**
+- **A) Resource server (Bearer/JWT) for the video API too** — the subscriber's token (obtained by a mobile/SPA doing PKCE) is sent as a Bearer; OTT just validates it. Stateless and uniform with §A-1, but OTT itself then **demonstrates no login** — the Auth-Code+PKCE flow lives entirely in a client we don't build, and there's nothing to exercise end-to-end without inventing that client.
+- **B) Server-side OIDC login web app (`oauth2Login`, session)** — OTT is the Relying Party that actually performs the browser redirect → Keycloak login → callback → **session**. The video surface is session-protected; the subscriber comes from the session principal. Literally shows the federated login; needs a second, session-based security chain alongside the §A-1 resource-server chain.
+
+**Choice:** **B** — server-side login web app for the subscriber surface; keep **A** (resource server) for the M2M provisioning API. `ott-service` therefore hosts **both** OAuth2 roles, separated by two `SecurityFilterChain`s ordered by path: `@Order(1)` `/ott/v1/entitlements/**` → resource server; `@Order(2)` everything else → `oauth2Login`.
+
+**Rationale:** §A-2's headline *is* the federated login — option A would have OTT demonstrate none of it. Making OTT the RP that performs the redirect is the most faithful, end-to-end-exercisable reading of Design/06's flow, and the "telco IdP logs the subscriber into the OTT app" narrative is exactly what a real carrier-bundled OTT does. The cost (a stateful chain + a session) is acceptable because the two roles are cleanly separated by request path. There is **no real media**: a successful stream returns `"Playing video: <title>"` — the point is the auth + entitlement gate, not streaming.
+
+**Consequences:**
+- **`vab-ott` is a *public* client** (auth-code + PKCE, no secret) so Spring auto-applies PKCE; a confidential client would need a manual PKCE customizer for no benefit here.
+- **Identity → entitlement** rides a `subscriberId` claim (Keycloak *user-attribute* mapper); streaming checks `existsBySubscriberIdAndOfferCodeAndStatus(…, ACTIVE)` against ott-service's own table. Demo user `alice` carries `subscriberId=sub-alice`.
+- **Two roles, one service** — the §A-1 provisioning chain is untouched; only a second chain + the video endpoints are added. The gateway edge JWT auth (§A-3 / A5) is still separate.
+- **Testing trade-off:** the gating logic is covered deterministically by a slice test (OIDC principal set directly on the `SecurityContext`); the *full* browser-login e2e must scrape Keycloak's login page, so it ships **@Disabled** (enable locally) — the robust e2e only asserts the unauthenticated redirect into the login flow.

@@ -1,5 +1,7 @@
 package com.vab.order.saga;
 
+import java.time.Instant;
+
 /**
  * Carries all mutable state the Saga orchestrator needs across steps.
  * Persisted by Eventuate Tram Sagas — must be serializable (Jackson).
@@ -10,9 +12,10 @@ public class PlaceOrderSagaData {
     private String subscriberId;
     private String offerCode;
     private String productType;   // PHYSICAL_GOOD | DIGITAL_SUBSCRIPTION | SOFTWARE_LICENSE
-    private long   amount;
-    private String currency;
-    private String billingMode;
+    private long    amount;
+    private String  currency;
+    private String  billingMode;
+    private Integer termMonths;   // snapshot from catalog at placement; drives entitlement validUntil
 
     // Populated as Saga progresses
     private String reservationId;   // PAY_NOW reserve / BILL_TO_MOBILE allocate
@@ -33,15 +36,18 @@ public class PlaceOrderSagaData {
     private String  provisioningFailureReason;
 
     // Fulfilment outcome (exactly one artifact populated, per productType)
-    private String fulfilmentRef;
-    private String trackingRef;    // PHYSICAL_GOOD
-    private String activationKey;  // SOFTWARE_LICENSE (pre-allocated at reserve)
-    private String externalRef;    // DIGITAL_SUBSCRIPTION
+    private String  fulfilmentRef;
+    private String  trackingRef;    // PHYSICAL_GOOD
+    private String  activationKey;  // SOFTWARE_LICENSE (pre-allocated at reserve)
+    private String  externalRef;    // DIGITAL_SUBSCRIPTION
+    private Instant validFrom;      // benefit activation (set on OrderFulfilled)
+    private Instant validUntil;     // benefit expiry (null = perpetual)
 
     public PlaceOrderSagaData() {}
 
     public PlaceOrderSagaData(String orderId, String subscriberId, String offerCode,
-                               String productType, long amount, String currency, String billingMode) {
+                               String productType, long amount, String currency, String billingMode,
+                               Integer termMonths) {
         this.orderId      = orderId;
         this.subscriberId = subscriberId;
         this.offerCode    = offerCode;
@@ -49,6 +55,7 @@ public class PlaceOrderSagaData {
         this.amount       = amount;
         this.currency     = currency;
         this.billingMode  = billingMode;
+        this.termMonths   = termMonths;
     }
 
     public String getOrderId()       { return orderId; }
@@ -69,7 +76,10 @@ public class PlaceOrderSagaData {
     public String getFulfilmentRef() { return fulfilmentRef; }
     public String getTrackingRef()   { return trackingRef; }
     public String getActivationKey() { return activationKey; }
-    public String getExternalRef()   { return externalRef; }
+    public String  getExternalRef()   { return externalRef; }
+    public Integer getTermMonths()    { return termMonths; }
+    public Instant getValidFrom()     { return validFrom; }
+    public Instant getValidUntil()    { return validUntil; }
 
     public void setReservationId(String reservationId) { this.reservationId = reservationId; }
     public void setProductType(String productType)     { this.productType = productType; }
@@ -84,4 +94,6 @@ public class PlaceOrderSagaData {
     public void setTrackingRef(String trackingRef)     { this.trackingRef = trackingRef; }
     public void setActivationKey(String activationKey) { this.activationKey = activationKey; }
     public void setExternalRef(String externalRef)     { this.externalRef = externalRef; }
+    public void setValidFrom(Instant validFrom)        { this.validFrom = validFrom; }
+    public void setValidUntil(Instant validUntil)      { this.validUntil = validUntil; }
 }

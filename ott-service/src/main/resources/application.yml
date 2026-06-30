@@ -12,6 +12,27 @@ spring:
   application:
     name: ott-service
 
+  # Keycloak must be up before ott-service starts (issuer discovery is eager).
+  security:
+    oauth2:
+      # §A-2: subscriber login (Authorization Code + PKCE) — public client, so
+      # client-authentication-method=none makes Spring auto-apply PKCE.
+      client:
+        registration:
+          keycloak:
+            client-id: vab-ott
+            client-authentication-method: none
+            authorization-grant-type: authorization_code
+            scope: openid, profile
+            redirect-uri: "{baseUrl}/login/oauth2/code/keycloak"
+        provider:
+          keycloak:
+            issuer-uri: ${KEYCLOAK_ISSUER:http://localhost:8088/realms/vab}
+      # §A-1 / DD-29: validate Keycloak-issued JWTs for the M2M provisioning API.
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER:http://localhost:8088/realms/vab}
+
   datasource:
     url: jdbc:postgresql://localhost:5432/vab
     username: eventuate
@@ -30,6 +51,10 @@ spring:
     schemas: ott
     locations: #flyway auto adds locations.
     - classpath:db/migration
+
+# §A-1 hardening: the audience the JWT must carry (Keycloak 'ott-service' mapper).
+ott:
+  required-audience: ott-service
 
 management:
   endpoints:

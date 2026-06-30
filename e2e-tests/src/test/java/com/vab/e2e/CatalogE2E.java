@@ -59,7 +59,7 @@ class CatalogE2E extends E2EBase {
                 .then().statusCode(200)
                 .body("offerCode", equalTo("ACC_BUDS_PRO"))
                 .body("eligible", notNullValue())
-                .body("rules", notNullValue());
+                .body("rules", notNullValue()).log().all();
     }
 
     @Test

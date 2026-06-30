@@ -61,6 +61,19 @@ public class OrderQueryController {
         return orders;
     }
 
+    /**
+     * GET /v1/orders/{orderId}/timeline (§B2) — the audit timeline only (status
+     * transitions), served from the read model. 404 if the order has not projected
+     * yet; the full detail (same timeline embedded) remains at GET /{orderId}.
+     */
+    @GetMapping("/{orderId}/timeline")
+    public ResponseEntity<List<OrderView.TimelineEntry>> timeline(@PathVariable String orderId) {
+        log.info("GET /v1/orders/{}/timeline", orderId);
+        return repo.findById(orderId)
+                .map(view -> ResponseEntity.ok(view.getTimeline()))
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
     /** Maps the write-store aggregate into the read-model shape for the fallback path. */
     private OrderView toView(Order order) {
         OrderView view = new OrderView();

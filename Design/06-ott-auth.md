@@ -109,4 +109,15 @@ Idempotent — returns `200` even if already revoked.
 
 ## Implementation note
 
-Spring Authorization Server (inside `api-gateway` module) provides the OIDC OP implementation — real implementation, not hand-rolled JWT. This is the correct portfolio-grade choice; a custom JWT issuer is a security red flag.
+**Self-hosted Keycloak** is the OIDC OP (DD-29) — a full open-source IdP (realms, user store + self-service registration, login/consent UI, credential flows, admin console) behind standard OIDC discovery/JWKS, not a hand-rolled JWT issuer. **`api-gateway` is not the OP**: it stays **Spring Cloud Gateway** as the edge resource server that validates Keycloak-issued tokens and relays them downstream. The OP endpoints are therefore Keycloak's realm endpoints (`/realms/vab/protocol/openid-connect/{auth,token,userinfo,certs}` + discovery), not `/oidc/*` on the gateway — the flows sketched above are unchanged in shape; only the OP host differs.
+
+### As-built (§A-2)
+
+ott-service is a backend with no video UI, so it plays the RP as a **server-side Spring `oauth2Login` client** rather than a SPA:
+
+- **Login** — public Keycloak client `vab-ott` (Authorization Code + **PKCE**, `S256`). The browser hits any `/v1/videos/**` path, Spring redirects to Keycloak, and the callback (`/login/oauth2/code/keycloak`) establishes a **session**. No client secret (public client ⇒ Spring auto-applies PKCE).
+- **Identity → entitlement** — the `subscriberId` claim (Keycloak *user-attribute* mapper) identifies the subscriber; streaming is gated against ott-service's own `entitlements` table (`existsBySubscriberIdAndOfferCodeAndStatus(…, ACTIVE)`). The seeded demo user `alice` carries `subscriberId=sub-alice`.
+- **Video surface** — `GET /v1/videos` lists a seeded catalog; `GET /v1/videos/{id}/stream` returns **`"Playing video: <title>"`** when entitled, **403** otherwise, **404** for an unknown id. There is no real media — "stream" is a success message.
+- **Two filter chains** — the §A-1 provisioning API (`/ott/v1/entitlements/**`) stays a **Bearer resource server** (`@Order(1)`); the subscriber surface is the **login client** (`@Order(2)`). One service, both OAuth2 roles.
+
+The provisioning flow (Order Saga → OTT) is unchanged — it remains the client-credentials path from §A-1/A-4 (the live route is `POST /ott/v1/entitlements`, not `/admin/entitlements`).

@@ -4,9 +4,12 @@ import com.vab.events.order.OrderCancelled;
 import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
 import com.vab.events.order.OrderConfirmed;
+import com.vab.events.order.OrderEntitlementRevoked;
 import com.vab.events.order.OrderFailed;
 import com.vab.events.order.OrderPlaced;
+import com.vab.order.query.document.EntitlementView;
 import com.vab.order.query.document.OrderView;
+import com.vab.order.query.repository.EntitlementViewRepository;
 import com.vab.order.query.repository.OrderViewRepository;
 import io.eventuate.tram.events.common.DomainEvent;
 import io.eventuate.tram.events.subscriber.DomainEventEnvelope;
@@ -33,12 +36,13 @@ import static org.mockito.Mockito.*;
 class OrderProjectorTest {
 
     @Mock OrderViewRepository repo;
+    @Mock EntitlementViewRepository entRepo;
 
     private OrderProjector projector;
 
     @BeforeEach
     void setUp() {
-        projector = new OrderProjector(repo);
+        projector = new OrderProjector(repo, entRepo);
     }
 
     @SuppressWarnings("unchecked")
@@ -136,6 +140,45 @@ class OrderProjectorTest {
         OrderView v = savedView();
         assertThat(v.getStatus()).isEqualTo("COMPLETED");
         assertThat(v.getFulfilment().getTrackingRef()).isEqualTo("TRK9");
+        verify(entRepo, never()).save(any());   // PHYSICAL_GOOD is not a benefit type
+    }
+
+    @Test
+    void completed_digital_subscription_activates_an_entitlement() {
+        OrderView view = existingView("ord-9", 1, "CONFIRMED");
+        view.setSubscriberId("sub-9");
+        view.setOfferCode("OTT_X_1M");
+        when(repo.findById("ord-9")).thenReturn(Optional.of(view));
+        when(entRepo.findBySourceOrderId("ord-9")).thenReturn(Optional.empty());
+
+        projector.onCompleted(envelope("ord-9",
+                new OrderCompleted(Instant.now(), 2, "DIGITAL_SUBSCRIPTION", null, null, "OTT-REF9")));
+
+        ArgumentCaptor<EntitlementView> c = ArgumentCaptor.forClass(EntitlementView.class);
+        verify(entRepo).save(c.capture());
+        EntitlementView ent = c.getValue();
+        assertThat(ent.getStatus()).isEqualTo("ACTIVE");
+        assertThat(ent.getSubscriberId()).isEqualTo("sub-9");
+        assertThat(ent.getOfferCode()).isEqualTo("OTT_X_1M");
+        assertThat(ent.getExternalRef()).isEqualTo("OTT-REF9");
+        assertThat(ent.getSourceOrderId()).isEqualTo("ord-9");
+        assertThat(ent.getEntitlementId()).startsWith("ent_");
+    }
+
+    @Test
+    void entitlement_revoked_flips_the_read_model_to_revoked() {
+        EntitlementView ent = new EntitlementView();
+        ent.setVersion(2);
+        ent.setStatus("ACTIVE");
+        ent.setOfferCode("OTT_X_1M");
+        when(entRepo.findBySourceOrderId("ord-9")).thenReturn(Optional.of(ent));
+
+        projector.onEntitlementRevoked(envelope("ord-9", new OrderEntitlementRevoked(Instant.now(), 3)));
+
+        ArgumentCaptor<EntitlementView> c = ArgumentCaptor.forClass(EntitlementView.class);
+        verify(entRepo).save(c.capture());
+        assertThat(c.getValue().getStatus()).isEqualTo("REVOKED");
+        assertThat(c.getValue().getVersion()).isEqualTo(3);
     }
 
     @Test

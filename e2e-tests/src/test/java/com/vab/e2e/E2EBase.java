@@ -25,9 +25,10 @@ import io.restassured.response.Response;
  */
 abstract class E2EBase {
 
-    protected static final String ORDER   = prop("vab.order.url",   "http://localhost:8081");
-    protected static final String CATALOG = prop("vab.catalog.url", "http://localhost:8085");
-    protected static final String OTT     = prop("vab.ott.url",     "http://localhost:8087");
+    protected static final String ORDER    = prop("vab.order.url",    "http://localhost:8081");
+    protected static final String CATALOG  = prop("vab.catalog.url",  "http://localhost:8085");
+    protected static final String OTT       = prop("vab.ott.url",      "http://localhost:8087");
+    protected static final String KEYCLOAK  = prop("vab.keycloak.url", "http://localhost:8088");
 
     /** Generous: the async path is POST → Kafka command/reply → CDC relay → projection. */
     protected static final Duration SETTLE = Duration.ofSeconds(45);
@@ -37,6 +38,21 @@ abstract class E2EBase {
         return (v == null || v.isBlank()) ? dflt : v;
     }
 
+    /** A Keycloak client-credentials access token for the provisioning client (§A-1). */
+    protected String clientCredentialsToken() {
+        return given().baseUri(KEYCLOAK)
+                .contentType("application/x-www-form-urlencoded")
+                .formParam("grant_type", "client_credentials")
+                .formParam("client_id", "vab-provisioning")
+                .formParam("client_secret", "vab-provisioning-secret")
+                .formParam("scope", "ott:provision")
+                .when().post("/realms/vab/protocol/openid-connect/token")
+                .then().statusCode(200)
+                .extract().path("access_token");
+    }
+    protected String sub() {
+		return "sub-rev-" + UUID.randomUUID();
+	}
     @BeforeAll
     static void requireLiveStack() {
         try {

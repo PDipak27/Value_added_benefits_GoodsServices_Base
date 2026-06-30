@@ -20,17 +20,27 @@ public class OrderCompleted implements DomainEvent {
     private String  trackingRef;    // PHYSICAL_GOOD
     private String  activationKey;  // SOFTWARE_LICENSE
     private String  externalRef;    // DIGITAL_SUBSCRIPTION
+    private Instant validFrom;      // benefit activation (null for PHYSICAL_GOOD)
+    private Instant validUntil;     // benefit expiry (null = perpetual / PHYSICAL_GOOD)
 
     public OrderCompleted() {}
 
     public OrderCompleted(Instant completedAt, long version, String productType,
                           String trackingRef, String activationKey, String externalRef) {
+        this(completedAt, version, productType, trackingRef, activationKey, externalRef, null, null);
+    }
+
+    public OrderCompleted(Instant completedAt, long version, String productType,
+                          String trackingRef, String activationKey, String externalRef,
+                          Instant validFrom, Instant validUntil) {
         this.completedAt   = completedAt;
         this.version       = version;
         this.productType   = productType;
         this.trackingRef   = trackingRef;
         this.activationKey = activationKey;
         this.externalRef   = externalRef;
+        this.validFrom     = validFrom;
+        this.validUntil    = validUntil;
     }
 
     public Instant getCompletedAt()   { return completedAt; }
@@ -39,4 +49,6 @@ public class OrderCompleted implements DomainEvent {
     public String  getTrackingRef()   { return trackingRef; }
     public String  getActivationKey() { return activationKey; }
     public String  getExternalRef()   { return externalRef; }
+    public Instant getValidFrom()     { return validFrom; }
+    public Instant getValidUntil()    { return validUntil; }
 }

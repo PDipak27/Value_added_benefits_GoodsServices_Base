@@ -18,11 +18,12 @@ class OrderQueryE2E extends E2EBase {
 
     @Test
     void get_by_id_is_readable_immediately_after_place() {
-        String orderId = placeOrder("sub-e2e", "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+    		String sub = sub();
+        String orderId = placeOrder(sub , "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
         given().baseUri(ORDER).get("/v1/orders/{id}", orderId)
                 .then().statusCode(200)
                 .body("orderId", equalTo(orderId))
-                .body("subscriberId", equalTo("sub-e2e"))
+                .body("subscriberId", equalTo(sub))
                 .body("productType", equalTo("DIGITAL_SUBSCRIPTION"))
                 .body("status", notNullValue());
     }
@@ -42,6 +43,33 @@ class OrderQueryE2E extends E2EBase {
         await().atMost(SETTLE).pollInterval(Duration.ofSeconds(1)).pollDelay(Duration.ZERO)
                 .untilAsserted(() -> given().baseUri(ORDER).queryParam("subscriberId", sub)
                         .when().get("/v1/orders")
+                        .then().statusCode(200)
+                        .body("orderId", hasItem(orderId)));
+    }
+
+    @Test
+    void timeline_endpoint_returns_the_audit_entries() {  // §B2
+        String sub = "sub-tl-" + UUID.randomUUID();
+        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+
+        // Timeline is read-model-only — poll until it projects, then assert PLACED is present.
+        await().atMost(SETTLE).pollInterval(Duration.ofSeconds(1)).pollDelay(Duration.ZERO)
+                .untilAsserted(() -> given().baseUri(ORDER).get("/v1/orders/{id}/timeline", "ord_fdc88069c0cc4dd2a255d4d3ee236123")
+                        .then().statusCode(200)
+                        .body("status", hasItem("PLACED")));
+    }
+
+    @Test
+    void ops_search_finds_a_completed_order_by_status_and_offer() {  // §B3
+        String sub = "sub-ops-" + UUID.randomUUID();
+        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+        awaitStatus(orderId, "COMPLETED");
+
+        // order_search_v1 is a separate projection/consumer group — poll until it lands.
+        await().atMost(SETTLE).pollInterval(Duration.ofSeconds(1)).pollDelay(Duration.ZERO)
+                .untilAsserted(() -> given().baseUri(ORDER)
+                        .queryParam("status", "COMPLETED").queryParam("offerCode", "OTT_HOTSTAR_3M")
+                        .when().get("/v1/ops/orders")
                         .then().statusCode(200)
                         .body("orderId", hasItem(orderId)));
     }

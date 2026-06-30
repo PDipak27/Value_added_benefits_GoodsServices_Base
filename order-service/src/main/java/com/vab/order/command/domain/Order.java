@@ -81,6 +81,21 @@ public class Order {
     @Column(name = "external_ref", length = 100)
     private String externalRef;     // DIGITAL_SUBSCRIPTION
 
+    /** Benefit term snapshotted from catalog at placement; lets a re-drive recompute validUntil. */
+    @Column(name = "term_months")
+    private Integer termMonths;
+
+    // Entitlement validity window, set at complete for benefit types (null otherwise).
+    @Column(name = "valid_from")
+    private Instant validFrom;
+
+    @Column(name = "valid_until")
+    private Instant validUntil;     // null = perpetual
+
+    /** Set when an admin revokes the entitlement (Phase 3); order stays COMPLETED. */
+    @Column(name = "entitlement_revoked_at")
+    private Instant entitlementRevokedAt;
+
     @Column(name = "failed_step", length = 64)
     private String failedStep;
 
@@ -122,11 +137,24 @@ public class Order {
     /** Terminal complete: fulfilled and (PAY_NOW) captured; one artifact is non-null. */
     public void complete(Instant completedAt, String trackingRef,
                          String activationKey, String externalRef) {
+        complete(completedAt, trackingRef, activationKey, externalRef, null, null);
+    }
+
+    /** Terminal complete with the benefit validity window (null for non-benefit / perpetual). */
+    public void complete(Instant completedAt, String trackingRef, String activationKey,
+                         String externalRef, Instant validFrom, Instant validUntil) {
         this.status        = OrderStatus.COMPLETED;
         this.completedAt   = completedAt;
         this.trackingRef   = trackingRef;
         this.activationKey = activationKey;
         this.externalRef   = externalRef;
+        this.validFrom     = validFrom;
+        this.validUntil    = validUntil;
+    }
+
+    /** Admin revoke of the entitlement (Phase 3). Order stays COMPLETED; idempotent. */
+    public void revokeEntitlement(Instant at) {
+        if (this.entitlementRevokedAt == null) this.entitlementRevokedAt = at;
     }
 
     public void fail(String failedStep, String reason) {
@@ -201,7 +229,14 @@ public class Order {
     public String      getTrackingRef()     { return trackingRef; }
     public String      getActivationKey()   { return activationKey; }
     public String      getExternalRef()     { return externalRef; }
+    public Integer     getTermMonths()      { return termMonths; }
+    public Instant     getValidFrom()       { return validFrom; }
+    public Instant     getValidUntil()      { return validUntil; }
+    public Instant     getEntitlementRevokedAt() { return entitlementRevokedAt; }
+    public boolean     isEntitlementRevoked()    { return entitlementRevokedAt != null; }
     public String      getFailedStep()      { return failedStep; }
+
+    public void setTermMonths(Integer termMonths) { this.termMonths = termMonths; }
     public String      getFailureReason()   { return failureReason; }
     public Instant     getLastAttemptAt()   { return lastAttemptAt; }
 }
