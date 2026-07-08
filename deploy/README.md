@@ -106,7 +106,19 @@ verification — order-service is fail-open if it's down); 7 to exercise routing
 > Sign in as the seeded demo user **`alice` / `alice`** (carries `subscriberId=sub-alice`,
 > which owns `OTT_HOTSTAR_3M` via a seed row), then `GET /v1/videos/vid_hotstar_ipl/stream`
 > returns `"Playing video: …"` while `…/vid_netflix_film/stream` returns `403`.
-> Gateway edge JWT auth arrives in A‑3.
+>
+> **Edge auth (§A-3, DD-31):** the **gateway** (`:8080`) and **order-service** are now
+> OAuth2 **resource servers** — start **Keycloak before both** (eager discovery). Call
+> the subscriber surface **through the gateway** with `Authorization: Bearer <token>`;
+> the gateway validates the JWT and relays it downstream. Catalog browse (`/v1/offers/**`)
+> is public; orders/entitlements need a token (subject = the `subscriberId` claim, no
+> body/param); back-office actions (`retry`/`complete`/`revoke-*`, `/v1/ops/**`) require
+> the **`vab-admin`** realm role (seeded user **`vabadmin` / `vabadmin`**). Get a user
+> token via the direct-access-grant on `vab-ott`:
+> `curl -d grant_type=password -d client_id=vab-ott -d username=alice -d password=alice -d scope=openid \`
+> `  http://localhost:8088/realms/vab/protocol/openid-connect/token`
+> The `-Pe2e` suite mints such tokens itself (creating throwaway users via the Keycloak
+> Admin API), so it now needs the **gateway running** too.
 
 ---
 

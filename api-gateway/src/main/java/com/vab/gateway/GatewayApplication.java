@@ -6,14 +6,13 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 /**
  * VA-BAGS edge / BFF.
  *
- * <p>Spring Cloud Gateway (reactive). Responsibilities for this iteration:
- * TLS termination (in front of it), request routing, and a single public
- * surface for external clients. Cross-cutting concerns that belong here per
- * {@code Design/02-service-responsibilities.md} but are deferred:
+ * <p>Spring Cloud Gateway (reactive). Responsibilities: request routing, and a
+ * single public surface for external clients. Since §A-3/DD-31 it is also an
+ * <b>edge OAuth2 resource server</b> — it validates Keycloak JWTs (JWKS), relays
+ * the Bearer downstream, and gates back-office routes on the {@code vab-admin}
+ * role (see {@code config/SecurityConfig}). The OIDC Provider is Keycloak, not the
+ * gateway (DD-29). Still deferred:
  * <ul>
- *   <li>JWT validation / OIDC Provider endpoints — added with
- *       {@code spring-boot-starter-oauth2-authorization-server} (commented out
- *       in the pom) in a later iteration.</li>
  *   <li>Rate limiting — Redis-backed {@code RequestRateLimiter} filter, later.</li>
  * </ul>
  *

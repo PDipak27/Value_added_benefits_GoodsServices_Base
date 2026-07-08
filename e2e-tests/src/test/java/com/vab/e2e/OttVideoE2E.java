@@ -1,14 +1,13 @@
 package com.vab.e2e;
 
-import io.restassured.filter.cookie.CookieFilter;
 import io.restassured.response.Response;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.is;
 
 /**
  * §A-2: OTT's video surface is OIDC-login protected (Authorization Code + PKCE via
@@ -27,36 +26,62 @@ class OttVideoE2E extends E2EBase {
 
     /**
      * Full Authorization Code + PKCE browser login, then entitlement-gated streaming.
-     * Disabled by default: it scrapes Keycloak's login form, whose markup can vary by
-     * Keycloak version — enable locally to exercise the real flow end-to-end.
-     * Pre-req: subscriber 'sub-alice' (seeded user 'alice') owns OTT_HOTSTAR_3M.
+     * Redirects are followed manually and cookies carried in an explicit name→value jar
+     * (CookieFilter drops the {@code path=/realms/vab/} auth-session cookie on the POST).
+     * On successful login Spring rotates the session id, so the authenticated JSESSIONID
+     * is captured from the callback's 302. Depends on Keycloak's login-page markup.
+     * Pre-req: re-imported realm with user 'alice'/'alice' (subscriberId=sub-alice),
+     * who owns OTT_HOTSTAR_3M via the V4 seed.
      */
     @Test
-    @Disabled("Full browser login — enable locally; depends on Keycloak login-page markup.")
     void subscriber_login_then_stream_is_gated() {
-        CookieFilter cookies = new CookieFilter();
+        Map<String, String> jar = new HashMap<>();
 
-        // 1. Kick off login → follow into Keycloak's login page.
-        Response loginPage = given().baseUri(OTT).filter(cookies).redirects().follow(true)
+        // 1. Start login at OTT → 302 to Keycloak's auth endpoint (sets OTT JSESSIONID).
+        Response r1 = given().baseUri(OTT).redirects().follow(false).cookies(jar)
                 .when().get("/oauth2/authorization/keycloak");
-        String action = loginPage.asString()
+        jar.putAll(r1.getCookies());
+        String kcAuthUrl = r1.getHeader("Location");
+
+        // 2. GET the auth endpoint → 200 login page (sets AUTH_SESSION_ID / KC_RESTART).
+        // urlEncodingEnabled(false): the URL is already encoded by the server; re-encoding
+        // would double-encode 'state' (its trailing '=' → %3D → %253D) and break the flow.
+        Response r2 = given().redirects().follow(false).cookies(jar).urlEncodingEnabled(false)
+                .when().get(kcAuthUrl);
+        jar.putAll(r2.getCookies());
+        String action = r2.asString()
                 .replaceAll("(?s).*<form[^>]*id=\"kc-form-login\"[^>]*action=\"([^\"]+)\".*", "$1")
                 .replace("&amp;", "&");
 
-        // 2. Submit credentials → 302 back to the OTT callback → session established.
-        given().filter(cookies).redirects().follow(true)
+        // 3. POST credentials → 302 back to the OTT callback with the auth code.
+        Response r3 = given().redirects().follow(false).cookies(jar).urlEncodingEnabled(false)
                 .contentType("application/x-www-form-urlencoded")
                 .formParam("username", "alice").formParam("password", "alice")
-                .when().post(action)
-                .then().statusCode(anyOf(is(200), is(302)));
+                .when().post(action);
+        jar.putAll(r3.getCookies());
+        String callbackUrl = r3.getHeader("Location");
 
-        // 3. Entitled title → "Playing video: …".
-        given().baseUri(OTT).filter(cookies)
+        // 4. GET the callback (carries JSESSIONID) → OTT exchanges the code → authenticated session.
+        Response r4 = given().redirects().follow(false).cookies(jar).urlEncodingEnabled(false)
+                .when().get(callbackUrl);
+        jar.putAll(r4.getCookies());
+
+        // --- diagnostics: which step loses the session? ---
+        System.out.println("[A2-DIAG] r2.status=" + r2.getStatusCode()
+                + " action=" + (action.length() > 90 ? action.substring(0, 90) : action));
+        //System.out.println("[A2-DIAG] r3.status=" + r3.getStatusCode() + " callback=" + callbackUrl);
+        //System.out.println("[A2-DIAG] r4.status=" + r4.getStatusCode() + " location=" + r4.getHeader("Location"));
+        //System.out.println("[A2-DIAG] r4.cookies=" + r4.getCookies());
+        //System.out.println("[A2-DIAG] jar keys=" + jar.keySet()
+               // + " JSESSIONID=" + (jar.containsKey("JSESSIONID")));
+
+        // 5. Entitled title → "Playing video: …".
+        given().baseUri(OTT).redirects().follow(false).cookies(jar)
                 .when().get("/v1/videos/vid_hotstar_ipl/stream")
                 .then().statusCode(200).body("message", containsString("Playing video"));
 
-        // 4. Title for an offer alice does not own → 403.
-        given().baseUri(OTT).filter(cookies)
+        // 6. Title for an offer alice does not own → 403.
+        given().baseUri(OTT).redirects().follow(false).cookies(jar)
                 .when().get("/v1/videos/vid_netflix_film/stream")
                 .then().statusCode(403);
     }

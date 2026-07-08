@@ -23,7 +23,11 @@ spring:
             client-id: vab-ott
             client-authentication-method: none
             authorization-grant-type: authorization_code
-            scope: openid, profile
+            # Only 'openid' — the realm import's clientScopes array does not include
+            # Keycloak's built-in 'profile' scope, and we don't need it: the only
+            # subscriber claim we use (subscriberId) is a client-level protocol mapper,
+            # emitted regardless of requested scopes.
+            scope: openid
             redirect-uri: "{baseUrl}/login/oauth2/code/keycloak"
         provider:
           keycloak:

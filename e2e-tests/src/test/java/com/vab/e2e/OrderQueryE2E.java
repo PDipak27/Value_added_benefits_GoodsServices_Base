@@ -13,14 +13,16 @@ import static org.hamcrest.Matchers.*;
  * Query side (CQRS): point read by id (read-your-writes — never 404s right after
  * a POST, via the write-store fallback in DD-15), 404 for an unknown id, and the
  * list-by-subscriber projection (read model only, so it's polled until it lands).
+ * §A-3: all reads go through the gateway with a bearer token; "my orders" is scoped
+ * to the caller's own subscriberId (no query param), and ops-search is admin-only.
  */
 class OrderQueryE2E extends E2EBase {
 
     @Test
     void get_by_id_is_readable_immediately_after_place() {
-    		String sub = sub();
-        String orderId = placeOrder(sub , "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
-        given().baseUri(ORDER).get("/v1/orders/{id}", orderId)
+        String sub = sub();
+        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+        authed().get("/v1/orders/{id}", orderId)
                 .then().statusCode(200)
                 .body("orderId", equalTo(orderId))
                 .body("subscriberId", equalTo(sub))
@@ -30,7 +32,7 @@ class OrderQueryE2E extends E2EBase {
 
     @Test
     void get_unknown_id_is_404() {
-        given().baseUri(ORDER).get("/v1/orders/{id}", "ord-" + UUID.randomUUID())
+        authed().get("/v1/orders/{id}", "ord-" + UUID.randomUUID())
                 .then().statusCode(404);
     }
 
@@ -39,9 +41,9 @@ class OrderQueryE2E extends E2EBase {
         String sub = "sub-e2e-" + UUID.randomUUID();
         String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
 
-        // List is served from the read model only — poll until the projection lands.
+        // "My orders" — scoped to the token's subscriberId; read model only, so poll.
         await().atMost(SETTLE).pollInterval(Duration.ofSeconds(1)).pollDelay(Duration.ZERO)
-                .untilAsserted(() -> given().baseUri(ORDER).queryParam("subscriberId", sub)
+                .untilAsserted(() -> asSubscriber(sub)
                         .when().get("/v1/orders")
                         .then().statusCode(200)
                         .body("orderId", hasItem(orderId)));
@@ -54,7 +56,7 @@ class OrderQueryE2E extends E2EBase {
 
         // Timeline is read-model-only — poll until it projects, then assert PLACED is present.
         await().atMost(SETTLE).pollInterval(Duration.ofSeconds(1)).pollDelay(Duration.ZERO)
-                .untilAsserted(() -> given().baseUri(ORDER).get("/v1/orders/{id}/timeline", "ord_fdc88069c0cc4dd2a255d4d3ee236123")
+                .untilAsserted(() -> authed().get("/v1/orders/{id}/timeline", orderId)
                         .then().statusCode(200)
                         .body("status", hasItem("PLACED")));
     }
@@ -65,9 +67,11 @@ class OrderQueryE2E extends E2EBase {
         String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
-        // order_search_v1 is a separate projection/consumer group — poll until it lands.
+        // /v1/ops/orders is admin-only and not routed by the gateway — call order-service
+        // directly with the admin token. Separate projection/consumer group, so poll.
         await().atMost(SETTLE).pollInterval(Duration.ofSeconds(1)).pollDelay(Duration.ZERO)
                 .untilAsserted(() -> given().baseUri(ORDER)
+                        .header("Authorization", "Bearer " + adminToken())
                         .queryParam("status", "COMPLETED").queryParam("offerCode", "OTT_HOTSTAR_3M")
                         .when().get("/v1/ops/orders")
                         .then().statusCode(200)

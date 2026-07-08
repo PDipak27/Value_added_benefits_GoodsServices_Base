@@ -4,20 +4,21 @@ import com.vab.order.query.document.EntitlementView;
 import com.vab.order.query.repository.EntitlementViewRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
 import java.util.List;
 
+import static com.vab.order.command.api.OrderCommandController.subscriberId;
+
 /**
- * "My Benefits" read API (pending §B1). Returns the subscriber's ACTIVE
- * entitlements from the {@code entitlements_v1} projection, mapped to a DTO
- * (storage shape is never exposed). Subject is the {@code subscriberId} query
- * param, mirroring {@code OrderQueryController}; JWT-derived subject is deferred
- * with gateway auth (pending §A).
+ * "My Benefits" read API (§B1). Returns the subscriber's ACTIVE entitlements from
+ * the {@code entitlements_v1} projection, mapped to a DTO (storage shape is never
+ * exposed). Subject is the {@code subscriberId} JWT claim (§A-3/A5).
  */
 @RestController
 @RequestMapping("/v1/entitlements")
@@ -31,10 +32,11 @@ public class EntitlementQueryController {
         this.repo = repo;
     }
 
-    /** GET /v1/entitlements?subscriberId=... — active benefits for the subscriber. */
+    /** GET /v1/entitlements — active benefits for the authenticated subscriber (JWT claim). */
     @GetMapping
-    public List<EntitlementDto> myBenefits(@RequestParam String subscriberId) {
-        log.info("GET /v1/entitlements?subscriberId={}", subscriberId);
+    public List<EntitlementDto> myBenefits(@AuthenticationPrincipal Jwt jwt) {
+        String subscriberId = subscriberId(jwt);
+        log.info("GET /v1/entitlements (subscriberId={})", subscriberId);
         List<EntitlementView> active = repo.findBySubscriberIdAndStatus(subscriberId, "ACTIVE");
         log.info("Found {} active entitlement(s) for subscriberId={}", active.size(), subscriberId);
         return active.stream().map(EntitlementQueryController::toDto).toList();

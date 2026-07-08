@@ -38,6 +38,18 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- ── OAuth2 resource server (§A-3/A5, DD-29/DD-31): validate the
+             gateway-relayed Keycloak JWT; subscriberId comes from the token. ── -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- ── Eventuate Tram — outbox + Kafka transport ────────────── -->
         <!--   Post-DD-14: state-stored aggregate, no Eventuate Local ES.  -->
         <dependency>

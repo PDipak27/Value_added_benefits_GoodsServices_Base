@@ -711,3 +711,24 @@ FULFILMENT_FAILED  (admin fixes external OTT, then…)
 - **Identity → entitlement** rides a `subscriberId` claim (Keycloak *user-attribute* mapper); streaming checks `existsBySubscriberIdAndOfferCodeAndStatus(…, ACTIVE)` against ott-service's own table. Demo user `alice` carries `subscriberId=sub-alice`.
 - **Two roles, one service** — the §A-1 provisioning chain is untouched; only a second chain + the video endpoints are added. The gateway edge JWT auth (§A-3 / A5) is still separate.
 - **Testing trade-off:** the gating logic is covered deterministically by a slice test (OIDC principal set directly on the `SecurityContext`); the *full* browser-login e2e must scrape Keycloak's login page, so it ships **@Disabled** (enable locally) — the robust e2e only asserts the unauthenticated redirect into the login flow.
+
+---
+
+## DD-31 — Edge auth is a **resource server at the gateway + token relay to services**; identity comes from the JWT; back-office actions gated by a realm role  *(backlog §A-3/A5; the gateway drops the authorization-server dep for resource-server)*
+
+**Problem:** §A5 wants the currently-open REST surface secured: validate Keycloak JWTs at the edge and stop trusting **client-supplied identity** — today `POST /v1/orders` reads `subscriberId` from the *body* and the query endpoints from a `?subscriberId=` *param*, so any caller can act as anyone. Two forks: (a) how identity propagates from the gateway to the services, and (b) how the back-office/admin mutations (order re-drive, manual complete, entitlement revoke) — which sit under the routed `/v1/orders/**` — are authorized.
+
+**Options (identity propagation):**
+- **A) Gateway-injected trusted header** — the gateway validates the JWT, extracts `subscriberId`, injects `X-Subscriber-Id`, strips any client-supplied one; services read the header and stay unsecured. Lightweight, but services trust the network and do no validation of their own.
+- **B) Token relay + services as resource servers** — the gateway validates *and forwards* the Bearer; each downstream service re-validates the JWT and reads the claim itself. Defence in depth; more config across services and a real migration cost for anything that called services directly.
+
+**Choice:** **B** — token relay; the gateway *and* order-service are OAuth2 resource servers. Identity is the **`subscriberId` claim** (the §A-2 Keycloak user-attribute mapper — *not* `sub`, which is a Keycloak UUID that would not match how orders/entitlements are keyed). Admin authorization: a **`vab-admin` realm role**, gated at both the gateway and order-service (`hasRole('vab-admin')` on retry / complete / revoke, plus the direct-only `/v1/ops/**`). Realm roles reach the token via a realm-role protocol mapper (`realm_access.roles`) and are converted to `ROLE_*` authorities by a small `KeycloakRealmRoleConverter` (Spring's default maps only scopes).
+
+**Rationale:** The client-supplied-subject hole is the whole point of the story, so a service must never again take identity from the body/param — it now comes only from a validated token. Defence in depth (B) means a service is safe even if something reaches it past the edge, which is worth the cost here; the gateway stays the single ingress but is not the *only* guard. Catalog browse (`/v1/offers/**`) stays **public** (pre-purchase browsing). `sub` was rejected as the subject precisely because A-2 already established `subscriberId` as the domain identity.
+
+**Consequences:**
+- **api-gateway** swaps `oauth2-authorization-server` (never enabled) for `oauth2-resource-server` and becomes a reactive `SecurityWebFilterChain`; it forwards the `Authorization` header by default (relay).
+- **order-service** becomes a servlet resource server; `POST /v1/orders` drops `subscriberId` from its body DTO and reads it from the JWT, and the query endpoints drop `?subscriberId=` (now "my orders" / "my benefits" scoped to the token subject). `getOrder`/`cancel`/`timeline` are authenticated but not ownership-checked (accepted scope).
+- **Realm** adds the `vab-admin` role, a `vabadmin` demo user, and (for tokens to carry roles) a realm-role mapper on `vab-ott`; `accessTokenLifespan` is raised for test-token reuse.
+- **E2E migration (defence-in-depth cost):** the black-box suite now calls **through the gateway with bearer tokens**; per-test arbitrary subscribers are preserved by minting tokens whose `subscriberId` claim is the test subject, **creating the Keycloak user on demand via the Admin API**. Admin flows use the seeded `vabadmin`; ops-search (not routed by the gateway) is called directly with the admin token. A dedicated `GatewayAuthE2E` asserts the boundary (401 unauthenticated, public catalog, 403 subscriber-on-admin, admin passes the gate).
+- Other services (inventory / billing / notification / fulfilment / catalog) are **not** routed or secured — internal saga participants, or (catalog) deliberately public.

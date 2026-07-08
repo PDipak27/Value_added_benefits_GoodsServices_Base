@@ -110,6 +110,22 @@ Served by ott-service, protected by **OIDC login** (Authorization Code + PKCE, s
 
 ---
 
+## Edge authentication (§A-3/A5, DD-31)
+
+The gateway is an OAuth2 **resource server** (Keycloak JWKS). Callers send `Authorization: Bearer <access_token>`; the token is **relayed** downstream and order-service re-validates it. Identity is the `subscriberId` **claim**, never client input.
+
+| Route | Auth |
+|---|---|
+| `GET /v1/offers/**` (catalog browse) | **public** |
+| `POST /v1/orders`, `POST /v1/orders/{id}/cancel` | authenticated — subject = JWT `subscriberId` (no body/param) |
+| `GET /v1/orders`, `GET /v1/entitlements` | authenticated — "my orders" / "my benefits", scoped to the JWT subject |
+| `GET /v1/orders/{id}`, `.../timeline` | authenticated |
+| `POST /v1/orders/{id}/{retry,complete,revoke}-*`, `GET /v1/ops/**` | **`vab-admin`** realm role |
+
+Unauthenticated → `401`; authenticated but lacking the role → `403`.
+
+---
+
 ## Service-to-service (not exposed via Gateway)
 
 | Caller | Path | Auth | Notes |

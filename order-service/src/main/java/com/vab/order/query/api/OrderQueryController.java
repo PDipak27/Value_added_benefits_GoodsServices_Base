@@ -7,9 +7,13 @@ import com.vab.order.query.repository.OrderViewRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+
+import static com.vab.order.command.api.OrderCommandController.subscriberId;
 
 @RestController
 @RequestMapping("/v1/orders")
@@ -52,10 +56,11 @@ public class OrderQueryController {
                 });
     }
 
-    /** GET /v1/orders?subscriberId=... (read model only — no write-store fallback) */
+    /** GET /v1/orders — the caller's own orders (subject from the JWT, read model only). */
     @GetMapping
-    public List<OrderView> listOrders(@RequestParam String subscriberId) {
-        log.info("GET /v1/orders?subscriberId={}", subscriberId);
+    public List<OrderView> listOrders(@AuthenticationPrincipal Jwt jwt) {
+        String subscriberId = subscriberId(jwt);
+        log.info("GET /v1/orders (subscriberId={})", subscriberId);
         List<OrderView> orders = repo.findBySubscriberIdOrderByPlacedAtDesc(subscriberId);
         log.info("Found {} order(s) for subscriberId={}", orders.size(), subscriberId);
         return orders;

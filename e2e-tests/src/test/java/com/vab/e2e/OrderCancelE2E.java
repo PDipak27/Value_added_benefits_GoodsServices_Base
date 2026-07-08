@@ -1,11 +1,9 @@
 package com.vab.e2e;
 
-import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.UUID;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -27,7 +25,7 @@ class OrderCancelE2E extends E2EBase {
         // Best-effort + race-tolerant: 202 if the cancel lands while the saga is still
         // in-flight, or 409 if the (fast-succeeding) order already reached a terminal
         // state before the cancel arrived (DD-26: cancel of a terminal order is refused).
-        int code = given().baseUri(ORDER)
+        int code = authed()
                 .when().post("/v1/orders/{id}/cancel", orderId)
                 .then().extract().statusCode();
         assertThat(code).isIn(202, 409);
@@ -41,7 +39,7 @@ class OrderCancelE2E extends E2EBase {
         String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
-        int code = given().baseUri(ORDER)
+        int code = authed()
                 .when().post("/v1/orders/{id}/cancel", orderId)
                 .then().extract().statusCode();
         assertThat(code).isIn(409);

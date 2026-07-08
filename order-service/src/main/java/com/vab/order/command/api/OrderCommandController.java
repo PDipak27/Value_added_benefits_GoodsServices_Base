@@ -2,8 +2,12 @@ package com.vab.order.command.api;
 
 import com.vab.order.command.domain.PlaceOrderCommand;
 import com.vab.order.command.service.OrderCommandService;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.util.UUID;
@@ -27,13 +31,14 @@ public class OrderCommandController {
     @PostMapping
     public ResponseEntity<PlaceOrderResponse> placeOrder(
             @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @AuthenticationPrincipal Jwt jwt,
             @RequestBody PlaceOrderRequest request,
             UriComponentsBuilder ucb) {
 
         validateIdempotencyKey(idempotencyKey);
 
-        // subscriberId stubbed from header for skeleton; replaced by JWT claim in iteration 6
-        String subscriberId = request.subscriberId();
+        // §A-3/A5: the subject is the authenticated subscriber (JWT claim), never client input.
+        String subscriberId = subscriberId(jwt);
 
         String orderId = commandService.placeOrder(new PlaceOrderCommand(
                 subscriberId,
@@ -132,7 +137,6 @@ public class OrderCommandController {
     // ── Request / Response DTOs (inner classes for skeleton brevity) ──────
 
     public record PlaceOrderRequest(
-            String subscriberId,
             String offerCode,
             String productType,
             String priceSnapshotId,
@@ -145,7 +149,16 @@ public class OrderCommandController {
 
     public record CompleteFulfilmentRequest(String externalRef) {}
 
-    // ── Validation ────────────────────────────────────────────────────────
+    // ── Identity / validation ───────────────────────────────────────────────
+
+    /** The authenticated subscriber, from the JWT {@code subscriberId} claim. */
+    public static String subscriberId(Jwt jwt) {
+        String sid = jwt == null ? null : jwt.getClaimAsString("subscriberId");
+        if (sid == null || sid.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Token carries no subscriberId claim");
+        }
+        return sid;
+    }
 
     private void validateIdempotencyKey(String key) {
         if (key == null || key.isBlank()) {

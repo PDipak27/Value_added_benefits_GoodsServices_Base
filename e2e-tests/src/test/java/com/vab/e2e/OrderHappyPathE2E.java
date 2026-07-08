@@ -2,7 +2,6 @@ package com.vab.e2e;
 
 import org.junit.jupiter.api.Test;
 
-import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.*;
 
 /**
@@ -19,7 +18,7 @@ class OrderHappyPathE2E extends E2EBase {
         String orderId = placeOrder(sub(), "ACC_BUDS_PRO", "PHYSICAL_GOOD", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
-        given().baseUri(ORDER).get("/v1/orders/{id}", orderId)
+        authed().get("/v1/orders/{id}", orderId)
                 .then().statusCode(200)
                 .body("fulfilment.trackingRef", notNullValue())
                 .body("fulfilment.activationKey", nullValue())
@@ -31,7 +30,7 @@ class OrderHappyPathE2E extends E2EBase {
         String orderId = placeOrder(sub(), "SW_MSOFFICE_1Y", "SOFTWARE_LICENSE", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
-        given().baseUri(ORDER).get("/v1/orders/{id}", orderId)
+        authed().get("/v1/orders/{id}", orderId)
                 .then().statusCode(200)
                 .body("fulfilment.activationKey", notNullValue())
                 .body("fulfilment.trackingRef", nullValue())
@@ -43,7 +42,7 @@ class OrderHappyPathE2E extends E2EBase {
         String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
-        given().baseUri(ORDER).get("/v1/orders/{id}", orderId)
+        authed().get("/v1/orders/{id}", orderId)
                 .then().statusCode(200)
                 .body("fulfilment.externalRef", startsWith("OTT-"))
                 .body("fulfilment.trackingRef", nullValue())
@@ -55,7 +54,7 @@ class OrderHappyPathE2E extends E2EBase {
         String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "BILL_TO_MOBILE");
         awaitStatus(orderId, "COMPLETED");
 
-        given().baseUri(ORDER).get("/v1/orders/{id}", orderId)
+        authed().get("/v1/orders/{id}", orderId)
                 .then().statusCode(200)
                 .body("fulfilment.externalRef", startsWith("OTT-"));
     }

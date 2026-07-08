@@ -1,10 +1,18 @@
 server:
-  port: 8080
+  port: 8089
   shutdown: graceful
 
 spring:
   application:
     name: api-gateway
+
+  # §A-3/A5: edge JWT validation. issuer-uri does OIDC discovery → JWKS.
+  # Keycloak must be up before the gateway starts (discovery is eager).
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER:http://localhost:8088/realms/vab}
 
   cloud:
     gateway:

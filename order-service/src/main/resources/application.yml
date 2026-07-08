@@ -6,6 +6,14 @@ spring:
   application:
     name: order-service
 
+  # ── §A-3/A5: validate the gateway-relayed Keycloak JWT (JWKS via issuer-uri).
+  #    Keycloak must be up before order-service starts (discovery is eager). ──
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER:http://localhost:8088/realms/vab}
+
   # ── Postgres (write side: order state + Tram outbox + idempotency) ──────
   datasource:
     url: jdbc:postgresql://localhost:5432/vab

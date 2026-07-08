@@ -21,11 +21,13 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
-        <!-- Spring Authorization Server — OIDC Provider (added in iteration 6+) -->
-        <!-- <dependency>
+        <!-- Edge OAuth2 resource server (§A-3/A5, DD-29): validate Keycloak JWTs (JWKS)
+             at the edge and relay the Bearer downstream. Replaces the never-enabled
+             authorization-server dep — the gateway is a resource server, not the OP. -->
+        <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-oauth2-authorization-server</artifactId>
-        </dependency> -->
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
     </dependencies>
 
     <dependencyManagement>

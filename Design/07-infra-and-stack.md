@@ -61,10 +61,10 @@ VA-BAGS/
         │
         ├── shared-events/            (versioned event POJOs + Saga commands/replies)
         │
-        ├── api-gateway/              (Spring Cloud Gateway; Spring Auth Server in iter 6)
+        ├── api-gateway/              (Spring Cloud Gateway; edge OAuth2 resource server — JWKS + token relay + vab-admin RBAC, §A-3/DD-31)
         ├── catalog-service/
         │
-        ├── order-service/            (single deployable — command + saga + query)
+        ├── order-service/            (single deployable — command + saga + query; resource server: JWT subscriberId, §A-3)
         │   └── src/main/java/com/vab/order/
         │       ├── command/api/      OrderCommandController
         │       ├── command/domain/   Order (state-stored JPA entity), commands

@@ -1,6 +1,5 @@
 package com.vab.e2e;
 
-import static io.restassured.RestAssured.given;
 import static io.restassured.http.ContentType.JSON;
 import static org.hamcrest.Matchers.equalTo;
 
@@ -24,7 +23,7 @@ class OrderFulfilmentFailedE2E extends E2EBase {
 	        String orderId = placeOrder(sub(), "ott_real_404", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
 	        awaitStatus(orderId, "FULFILMENT_FAILED");
 	        
-	        given().baseUri(ORDER)
+	        asAdmin()
             .when().post("/v1/orders/{id}/retry-fulfilment", orderId)
             .then().statusCode(202);
 	        awaitStatus(orderId, "COMPLETED");
@@ -49,7 +48,7 @@ class OrderFulfilmentFailedE2E extends E2EBase {
         awaitStatus(orderId, "FULFILMENT_FAILED");
 
         // Provider is still down → accepted, then re-parks.
-        given().baseUri(ORDER)
+        asAdmin()
                 .when().post("/v1/orders/{id}/retry-fulfilment", orderId)
                 .then().statusCode(202);
         awaitStatus(orderId, "FULFILMENT_FAILED");
@@ -60,13 +59,13 @@ class OrderFulfilmentFailedE2E extends E2EBase {
         String orderId = placeOrder(sub(), "OTT_OTTBAD_1M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
         awaitStatus(orderId, "FULFILMENT_FAILED");
 
-        given().baseUri(ORDER).contentType(JSON)
+        asAdmin().contentType(JSON)
                 .body(Map.of("externalRef", "OTT-MANUAL-E2E"))
                 .when().post("/v1/orders/{id}/complete-fulfilment", orderId)
                 .then().statusCode(202);
 
         awaitStatus(orderId, "COMPLETED");
-        given().baseUri(ORDER).get("/v1/orders/{id}", orderId)
+        authed().get("/v1/orders/{id}", orderId)
                 .then().statusCode(200)
                 .body("fulfilment.externalRef", equalTo("OTT-MANUAL-E2E"));
     }
@@ -76,7 +75,7 @@ class OrderFulfilmentFailedE2E extends E2EBase {
         String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
-        given().baseUri(ORDER)
+        asAdmin()
                 .when().post("/v1/orders/{id}/retry-fulfilment", orderId)
                 .then().statusCode(409);
     }
@@ -86,7 +85,7 @@ class OrderFulfilmentFailedE2E extends E2EBase {
         String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
-        given().baseUri(ORDER).contentType(JSON)
+        asAdmin().contentType(JSON)
                 .body(Map.of("externalRef", "OTT-NOPE"))
                 .when().post("/v1/orders/{id}/complete-fulfilment", orderId)
                 .then().statusCode(409);//.log().all();

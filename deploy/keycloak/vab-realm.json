@@ -4,6 +4,7 @@
   "displayName": "VA-BAGS",
   "sslRequired": "none",
   "registrationAllowed": false,
+  "accessTokenLifespan": 3600,
   "clientScopes": [
     {
       "name": "ott:provision",
@@ -71,10 +72,30 @@
             "access.token.claim": "true",
             "userinfo.token.claim": "true"
           }
+        },
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "usermodel.realmRoleMapping.rolePrefix": "",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
         }
       ]
     }
   ],
+  "roles": {
+    "realm": [
+      { "name": "vab-admin", "description": "Back-office admin — order re-drive, manual complete, entitlement revoke, ops search (§A-3/A5)." }
+    ]
+  },
   "users": [
     {
       "username": "alice",
@@ -87,6 +108,19 @@
       "credentials": [
         { "type": "password", "value": "alice", "temporary": false }
       ]
+    },
+    {
+      "username": "vabadmin",
+      "enabled": true,
+      "email": "admin@example.com",
+      "firstName": "VA-BAGS",
+      "lastName": "Admin",
+      "emailVerified": true,
+      "attributes": { "subscriberId": ["sub-admin"] },
+      "credentials": [
+        { "type": "password", "value": "vabadmin", "temporary": false }
+      ],
+      "realmRoles": ["vab-admin"]
     }
   ]
 }

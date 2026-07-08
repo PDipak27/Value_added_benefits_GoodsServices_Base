@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -69,8 +70,8 @@ class VideoControllerTest {
 
     @Test
     void catalog_lists_videos() throws Exception {
-        when(videos.findAll()).thenReturn(List.of(video("vid1", "IPL Final", "OTT_HOTSTAR_3M")));
 
+		Mockito.doReturn(List.of(video("vid1", "IPL Final", "OTT_HOTSTAR_3M"))).when(videos).findAll();
         mvc().perform(get("/v1/videos"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].id").value("vid1"))
@@ -80,7 +81,9 @@ class VideoControllerTest {
     @Test
     void stream_returns_playing_when_entitled() throws Exception {
         loginAs("sub-alice");
-        when(videos.findById("vid1")).thenReturn(Optional.of(video("vid1", "IPL Final", "OTT_HOTSTAR_3M")));
+        Mockito.doReturn(Optional.of(video("vid1", "IPL Final", "OTT_HOTSTAR_3M"))).
+        when(videos).findById("vid1");
+        
         when(entitlements.existsBySubscriberIdAndOfferCodeAndStatus("sub-alice", "OTT_HOTSTAR_3M", Entitlement.Status.ACTIVE))
                 .thenReturn(true);
 
@@ -92,7 +95,9 @@ class VideoControllerTest {
     @Test
     void stream_is_403_when_not_entitled() throws Exception {
         loginAs("sub-bob");
-        when(videos.findById("vid1")).thenReturn(Optional.of(video("vid1", "IPL Final", "OTT_HOTSTAR_3M")));
+        Mockito.doReturn(Optional.of(video("vid1", "IPL Final", "OTT_HOTSTAR_3M"))).
+        when(videos).findById("vid1");
+        
         when(entitlements.existsBySubscriberIdAndOfferCodeAndStatus("sub-bob", "OTT_HOTSTAR_3M", Entitlement.Status.ACTIVE))
                 .thenReturn(false);
 
