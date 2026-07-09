@@ -87,9 +87,14 @@ abstract class E2EBase {
         return given().baseUri(GATEWAY).header("Authorization", "Bearer " + adminToken());
     }
 
-    /** Request through the gateway as any authenticated identity (reads by id — no ownership check). */
+    /**
+     * Reads / cancels of an <em>arbitrary</em> order where the test doesn't thread the
+     * owner (e.g. status polling). Uses the admin token, which bypasses the §A-3
+     * object-level ownership check — ownership itself is asserted with real subscriber
+     * tokens in {@code GatewayAuthE2E}.
+     */
     protected RequestSpecification authed() {
-        return given().baseUri(GATEWAY).header("Authorization", "Bearer " + tokenForSubscriber("sub-e2e-reader"));
+        return asAdmin();
     }
 
     private static String kcAdminToken() {

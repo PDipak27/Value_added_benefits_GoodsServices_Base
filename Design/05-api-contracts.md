@@ -117,9 +117,10 @@ The gateway is an OAuth2 **resource server** (Keycloak JWKS). Callers send `Auth
 | Route | Auth |
 |---|---|
 | `GET /v1/offers/**` (catalog browse) | **public** |
-| `POST /v1/orders`, `POST /v1/orders/{id}/cancel` | authenticated — subject = JWT `subscriberId` (no body/param) |
+| `POST /v1/orders` | authenticated — subject = JWT `subscriberId` (no body/param) |
+| `POST /v1/orders/{id}/cancel` | authenticated — **owner only** (or admin); non-owner → `404` |
 | `GET /v1/orders`, `GET /v1/entitlements` | authenticated — "my orders" / "my benefits", scoped to the JWT subject |
-| `GET /v1/orders/{id}`, `.../timeline` | authenticated |
+| `GET /v1/orders/{id}`, `.../timeline` | authenticated — **owner only** (or admin); non-owner → `404` (existence not revealed) |
 | `POST /v1/orders/{id}/{retry,complete,revoke}-*`, `GET /v1/ops/**` | **`vab-admin`** realm role |
 
 Unauthenticated → `401`; authenticated but lacking the role → `403`.

@@ -1,5 +1,7 @@
 package com.vab.order.command.api;
 
+import com.vab.order.command.domain.Order;
+import com.vab.order.command.domain.OrderRepository;
 import com.vab.order.command.domain.PlaceOrderCommand;
 import com.vab.order.command.service.OrderCommandService;
 import org.springframework.http.HttpStatus;
@@ -10,6 +12,8 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -17,9 +21,11 @@ import java.util.UUID;
 public class OrderCommandController {
 
     private final OrderCommandService commandService;
+    private final OrderRepository     orderRepo;
 
-    public OrderCommandController(OrderCommandService commandService) {
+    public OrderCommandController(OrderCommandService commandService, OrderRepository orderRepo) {
         this.commandService = commandService;
+        this.orderRepo      = orderRepo;
     }
 
     /**
@@ -67,7 +73,9 @@ public class OrderCommandController {
      * after fulfilment, cancel is refused.
      */
     @PostMapping("/{id}/cancel")
-    public ResponseEntity<Void> cancelOrder(@PathVariable("id") String orderId) {
+    public ResponseEntity<Void> cancelOrder(@PathVariable("id") String orderId,
+                                            @AuthenticationPrincipal Jwt jwt) {
+        authorizeOwnership(orderId, jwt);   // 404 if not the owner (and not admin)
         try {
             commandService.requestCancel(orderId);
             return ResponseEntity.accepted().build();
@@ -158,6 +166,28 @@ public class OrderCommandController {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Token carries no subscriberId claim");
         }
         return sid;
+    }
+
+    /** Whether the token carries the back-office {@code vab-admin} realm role (sees any order). */
+    public static boolean isAdmin(Jwt jwt) {
+        Object realmAccess = jwt == null ? null : jwt.getClaim("realm_access");
+        return realmAccess instanceof Map<?, ?> ra
+                && ra.get("roles") instanceof List<?> roles
+                && roles.contains("vab-admin");
+    }
+
+    /**
+     * Object-level authorization (§A-3 hardening): a subscriber may only act on their
+     * own order; admins may act on any. A non-owner gets {@code 404} — never {@code 403} —
+     * so the endpoint does not reveal whether the order exists.
+     */
+    private void authorizeOwnership(String orderId, Jwt jwt) {
+        if (isAdmin(jwt)) return;
+        String caller = subscriberId(jwt);
+        Order order = orderRepo.findById(orderId).orElse(null);
+        if (order == null || !caller.equals(order.getSubscriberId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found");
+        }
     }
 
     private void validateIdempotencyKey(String key) {

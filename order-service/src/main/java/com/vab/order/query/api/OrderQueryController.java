@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+import static com.vab.order.command.api.OrderCommandController.isAdmin;
 import static com.vab.order.command.api.OrderCommandController.subscriberId;
 
 @RestController
@@ -36,22 +37,30 @@ public class OrderQueryController {
      * back to a bounded single-key point read of the Postgres write store so a
      * POST-then-GET never 404s during projection lag (read-your-writes). List
      * and search queries still require the read model — the CQRS boundary holds.
+     *
+     * <p>§A-3 hardening: object-level authorization — a subscriber sees only their
+     * own order, admins see any; a non-owner gets 404 (existence is not revealed).
      */
     @GetMapping("/{orderId}")
-    public ResponseEntity<OrderView> getOrder(@PathVariable String orderId) {
+    public ResponseEntity<OrderView> getOrder(@PathVariable String orderId, @AuthenticationPrincipal Jwt jwt) {
         log.info("GET /v1/orders/{}", orderId);
+        boolean admin = isAdmin(jwt);
+        String caller = admin ? null : subscriberId(jwt);
         return repo.findById(orderId)
+                .filter(v -> admin || caller.equals(v.getSubscriberId()))
                 .map(view -> {
                     log.info("Served from read model: orderId={}, status={}", orderId, view.getStatus());
                     return ResponseEntity.ok(view);
                 })
-                .or(() -> orderRepo.findById(orderId).map(order -> {
-                    log.info("Read model miss — read-your-writes fallback to Postgres: orderId={}, status={}",
-                            orderId, order.getStatus());
-                    return ResponseEntity.ok(toView(order));
-                }))
+                .or(() -> orderRepo.findById(orderId)
+                        .filter(o -> admin || caller.equals(o.getSubscriberId()))
+                        .map(order -> {
+                            log.info("Read model miss — read-your-writes fallback to Postgres: orderId={}, status={}",
+                                    orderId, order.getStatus());
+                            return ResponseEntity.ok(toView(order));
+                        }))
                 .orElseGet(() -> {
-                    log.info("Order not found: orderId={}", orderId);
+                    log.info("Order not found or not owned: orderId={}", orderId);
                     return ResponseEntity.notFound().build();
                 });
     }
@@ -72,9 +81,13 @@ public class OrderQueryController {
      * yet; the full detail (same timeline embedded) remains at GET /{orderId}.
      */
     @GetMapping("/{orderId}/timeline")
-    public ResponseEntity<List<OrderView.TimelineEntry>> timeline(@PathVariable String orderId) {
+    public ResponseEntity<List<OrderView.TimelineEntry>> timeline(@PathVariable String orderId,
+                                                                  @AuthenticationPrincipal Jwt jwt) {
         log.info("GET /v1/orders/{}/timeline", orderId);
+        boolean admin = isAdmin(jwt);
+        String caller = admin ? null : subscriberId(jwt);
         return repo.findById(orderId)
+                .filter(v -> admin || caller.equals(v.getSubscriberId()))
                 .map(view -> ResponseEntity.ok(view.getTimeline()))
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
