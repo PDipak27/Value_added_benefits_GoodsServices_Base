@@ -1,0 +1,60 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "title": "VA-BAGS — Logs (§C2)",
+  "uid": "vabags-logs",
+  "schemaVersion": 39,
+  "version": 2,
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "service",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "loki" },
+        "query": { "label": "service", "stream": "", "type": 1 },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {}
+      },
+      {
+        "name": "correlationId",
+        "label": "correlationId",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": "", "value": "" }
+      },
+      {
+        "name": "search",
+        "label": "search",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": "", "value": "" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "logs",
+      "title": "VA-BAGS logs — set $correlationId to follow one request across all services (B-2)",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 22, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{app=\"vabags\", service=~\"$service\"} | json | correlationId=~\"(?i).*$correlationId.*\" |~ \"(?i)$search\" | line_format \"{{.service}} {{.level}} {{.logger_name}} trace={{.traceId}} span={{.spanId}} corr={{.correlationId}} - {{.message}}\""
+        }
+      ]
+    }
+  ]
+}

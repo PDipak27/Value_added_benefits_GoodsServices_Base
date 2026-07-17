@@ -1,7 +1,9 @@
 package com.vab.fulfilment.ott;
 
+import com.vab.observability.Correlation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
@@ -41,6 +43,9 @@ public class OttClient {
         this.restClient   = builder.baseUrl(baseUrl)
                 .requestInterceptor((request, body, execution) -> {
                     request.getHeaders().setBearerAuth(tokenProvider.token());
+                    // §C2 B-2: forward the correlation id so ott-service's logs join this order's trail.
+                    String correlationId = MDC.get(Correlation.MDC_CORRELATION_ID);
+                    if (correlationId != null) request.getHeaders().set(Correlation.HEADER, correlationId);
                     return execution.execute(request, body);
                 })
                 .build();

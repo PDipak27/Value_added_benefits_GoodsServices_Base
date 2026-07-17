@@ -1,0 +1,17 @@
+# §C2 scope C: Tempo datasource. tracesToLogsV2 links a span → its Loki logs (by traceId).
+apiVersion: 1
+datasources:
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        filterByTraceID: true
+        spanStartTimeShift: "-1h"
+        spanEndTimeShift: "1h"
+        tags:
+          - key: service.name
+            value: service

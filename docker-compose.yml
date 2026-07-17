@@ -162,7 +162,10 @@ services:
   # client-credentials provisioning client (realm 'vab', client 'vab-provisioning',
   # scope 'ott:provision'). Reuses the LOCAL Postgres — create the DB first via
   # deploy/postgres-init/03-keycloak-db.sql. Realm imported on start.
-  # Issuer for resource servers: http://localhost:8088/realms/vab
+  # Issuer for resource servers: https://localhost:8088/realms/vab  (§E2 edge TLS).
+  # §4: dev-mode Keycloak. DEFAULT = plain HTTP (host :8088 → container :8080) — no certs needed,
+  # fastest to boot. For the §E2 edge-TLS setup, layer docker-compose.keycloak-tls.yml on top and
+  # set KC_HTTP_PORT=8443 (see that file's header for the full recipe).
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     container_name: vab-keycloak
@@ -181,9 +184,56 @@ services:
       KC_HOSTNAME_STRICT: "false"
       TZ: Asia/Kolkata
     ports:
-      - "8088:8080"
+      # Host 8088 → container 8080 (HTTP dev) by default; TLS mode sets KC_HTTP_PORT=8443.
+      - "8088:${KC_HTTP_PORT:-8080}"
     volumes:
       - ./deploy/keycloak:/opt/keycloak/data/import:ro
 
+  # ── Observability (§C2): services push JSON logs (loki4j) → Loki → Grafana ──
+  # §perf: all three are gated behind the `obs` compose profile — they only start
+  # when COMPOSE_PROFILES=obs (or `docker compose --profile obs up`), keeping RAM free otherwise.
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: vab-loki
+    profiles: ["obs"]
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./deploy/observability/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: vab-grafana
+    profiles: ["obs"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"   # skip login for local dev
+    ports:
+      - "3000:3000"                          # UI: http://localhost:3000
+    depends_on:
+      - loki
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+
+  # ── Tracing (§C2 scope C): services push OTLP spans → Tempo; Grafana reads it ──
+  tempo:
+    image: grafana/tempo:2.5.0
+    container_name: vab-tempo
+    profiles: ["obs"]
+    command: ["-config.file=/etc/tempo/tempo-config.yaml"]
+    ports:
+      - "3200:3200"   # Tempo query API (Grafana datasource)
+      - "4317:4317"   # OTLP gRPC receiver (OpenTelemetry SDK default — services export here)
+      - "4318:4318"   # OTLP HTTP receiver
+    volumes:
+      - ./deploy/observability/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
+      - tempo_data:/var/tempo
+
 volumes:
   mongo_data:
+  loki_data:
+  grafana_data:
+  tempo_data:

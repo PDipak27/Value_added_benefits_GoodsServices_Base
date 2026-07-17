@@ -1,12 +1,20 @@
 server:
   port: 8089
   shutdown: graceful
+  # §E2 edge TLS: the gateway terminates HTTPS for external clients. Generate the
+  # keystore first (deploy/tls/README.md); set GATEWAY_SSL_ENABLED=false to run plain HTTP.
+  ssl:
+    enabled: ${GATEWAY_SSL_ENABLED:true}
+    key-store: ${GATEWAY_SSL_KEYSTORE:file:D:/Dev/E_Learn/courses/DVA-C02/Projects/VA-BAGS/source/vabags_base/deploy/tls/gateway-keystore.p12}
+    key-store-password: ${GATEWAY_SSL_KEYSTORE_PASSWORD:changeit}
+    key-store-type: PKCS12
+    key-alias: gateway
 
 spring:
   application:
     name: api-gateway
 
-  # §A-3/A5: edge JWT validation. issuer-uri does OIDC discovery → JWKS.
+  # §A-3/A5: edge JWT validation. issuer-uri does OIDC discovery → JWKS (over TLS, §E2).
   # Keycloak must be up before the gateway starts (discovery is eager).
   security:
     oauth2:
@@ -49,6 +57,17 @@ spring:
         response-timeout: 10s
 
 management:
+  # §perf: default OFF (0.0) at the edge — traceId is still generated & rides traceparent downstream
+  # (so it shows in file/console logs), but nothing is exported. The `obs` profile flips it to 1.0.
+  tracing:
+    sampling:
+      probability: 0.0
+  # §perf: no span export unless `obs` is active — old sampled traceparents on incoming hops
+  # would otherwise force export attempts at Tempo (parent-based sampler honours them).
+  otlp:
+    tracing:
+      export:
+        enabled: false
   endpoints:
     web:
       exposure:
@@ -58,3 +77,18 @@ logging:
   level:
     com.vab: DEBUG
     org.springframework.cloud.gateway: INFO
+
+---
+# §perf: `obs` profile — record + export every trace to Tempo (pair with COMPOSE_PROFILES=obs).
+spring:
+  config:
+    activate:
+      on-profile: obs
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      export:
+        enabled: true

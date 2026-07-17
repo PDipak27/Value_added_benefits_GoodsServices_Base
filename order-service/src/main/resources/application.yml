@@ -58,6 +58,17 @@ eventuatelocal:
 
 # ── Actuator ───────────────────────────────────────────────────────────────
 management:
+  # §perf: default OFF (0.0) — the traceId is still generated & propagated (so it shows in file/console
+  # logs), but nothing is recorded or exported, so Tempo isn't needed. The `obs` profile flips it to 1.0.
+  tracing:
+    sampling:
+      probability: 0.0
+  # §perf: no span export unless `obs` is active — old sampled traceparents on Kafka messages
+  # would otherwise force export attempts at Tempo (parent-based sampler honours them).
+  otlp:
+    tracing:
+      export:
+        enabled: false
   endpoints:
     web:
       exposure:
@@ -70,3 +81,18 @@ logging:
   level:
     com.vab: DEBUG
     io.eventuate: INFO
+
+---
+# §perf: `obs` profile — record + export every trace to Tempo (pair with COMPOSE_PROFILES=obs).
+spring:
+  config:
+    activate:
+      on-profile: obs
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      export:
+        enabled: true

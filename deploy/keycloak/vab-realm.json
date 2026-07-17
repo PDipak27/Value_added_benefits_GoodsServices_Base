@@ -2,7 +2,7 @@
   "realm": "vab",
   "enabled": true,
   "displayName": "VA-BAGS",
-  "sslRequired": "none",
+  "sslRequired": "external",
   "registrationAllowed": false,
   "accessTokenLifespan": 3600,
   "clientScopes": [

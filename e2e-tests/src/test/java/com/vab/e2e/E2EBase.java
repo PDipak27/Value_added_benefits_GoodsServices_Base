@@ -28,7 +28,9 @@ import io.restassured.specification.RequestSpecification;
  */
 abstract class E2EBase {
 
-    protected static final String GATEWAY  = prop("vab.gateway.url",  "http://localhost:8089");
+    // §E2 edge TLS: the gateway is HTTPS (mkcert). §4: Keycloak defaults to HTTP dev mode —
+    // override with -Dvab.keycloak.url=https://localhost:8088 when running the TLS setup.
+    protected static final String GATEWAY  = prop("vab.gateway.url",  "https://localhost:8089");
     protected static final String ORDER    = prop("vab.order.url",    "http://localhost:8081");
     protected static final String CATALOG  = prop("vab.catalog.url",  "http://localhost:8085");
     protected static final String OTT       = prop("vab.ott.url",      "http://localhost:8087");
@@ -162,6 +164,9 @@ abstract class E2EBase {
 
     @BeforeAll
     static void requireLiveStack() {
+        // §E2: trust the mkcert (self-signed-ish) certs on the HTTPS hops without
+        // wiring a truststore into the test JVM.
+        io.restassured.RestAssured.useRelaxedHTTPSValidation();
         try {
             int code = given().baseUri(ORDER).get("/actuator/health").statusCode();
             Assumptions.assumeTrue(code == 200,

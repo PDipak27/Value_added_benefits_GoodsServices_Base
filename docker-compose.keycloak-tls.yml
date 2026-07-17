@@ -1,0 +1,21 @@
+# §4 / §E2 — edge-TLS override for Keycloak.
+#
+# Layer this on top of docker-compose.yml to serve HTTPS (mkcert cert) instead of the default
+# plain-HTTP dev mode. It only ADDS the cert env + cert mounts; the base service supplies the rest.
+# Generate the certs first (see deploy/tls/README.md), else the container won't start.
+#
+# Bring it up (KC_HTTP_PORT flips host 8088 → the HTTPS container port 8443):
+#   KC_HTTP_PORT=8443 docker compose -f docker-compose.yml -f docker-compose.keycloak-tls.yml up -d keycloak
+#
+# Then point the apps + e2e at HTTPS (they default to HTTP now):
+#   KEYCLOAK_ISSUER=https://localhost:8088/realms/vab
+#   KEYCLOAK_TOKEN_URI=https://localhost:8088/realms/vab/protocol/openid-connect/token   # fulfilment-service
+#   mvn ... -Dvab.keycloak.url=https://localhost:8088                                    # e2e-tests
+services:
+  keycloak:
+    environment:
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/tls.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/tls.key
+    volumes:
+      - ./deploy/tls/keycloak.crt.pem:/opt/keycloak/conf/tls.crt:ro
+      - ./deploy/tls/keycloak.key.pem:/opt/keycloak/conf/tls.key:ro

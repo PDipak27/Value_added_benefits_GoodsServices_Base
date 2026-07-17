@@ -12,6 +12,7 @@
 
     <modules>
         <module>shared-events</module>
+        <module>shared-observability</module>
         <module>api-gateway</module>
         <module>catalog-service</module>
         <module>order-service</module>
@@ -56,6 +57,15 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <!-- §C2 scope C: Eventuate's Micrometer-tracing integration (Tram/Kafka
+                 traceparent propagation via its own MessageInterceptors). -->
+            <dependency>
+                <groupId>io.eventuate.tram.springmicrometertracing</groupId>
+                <artifactId>eventuate-tram-spring-micrometer-tracing-bom</artifactId>
+                <version>0.1.0.RELEASE</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
 
             <!-- Override Spring Boot BOM's Flyway 10.20.x → 11.x for Postgres 18 support.
                  Property override doesn't cross BOM-import boundary, so pin explicitly here. -->
@@ -76,6 +86,23 @@
                 <artifactId>shared-events</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.vab</groupId>
+                <artifactId>shared-observability</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- §C2 observability: structured JSON logging + direct push to Loki -->
+            <dependency>
+                <groupId>net.logstash.logback</groupId>
+                <artifactId>logstash-logback-encoder</artifactId>
+                <version>8.0</version>
+            </dependency>
+            <dependency>
+                <groupId>com.github.loki4j</groupId>
+                <artifactId>loki-logback-appender</artifactId>
+                <version>1.5.2</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -85,6 +112,32 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
+        </dependency>
+
+        <!-- §C2 observability: JSON console encoder + Loki push appender (all modules) -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.loki4j</groupId>
+            <artifactId>loki-logback-appender</artifactId>
+        </dependency>
+
+        <!-- §C2 scope C: distributed tracing. Actuator drives Boot's tracing auto-config;
+             the OTel bridge + OTLP exporter emit spans (default endpoint :4318 → Tempo).
+             traceId/spanId land in MDC automatically → JSON logs + Loki. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
         </dependency>
     </dependencies>
 

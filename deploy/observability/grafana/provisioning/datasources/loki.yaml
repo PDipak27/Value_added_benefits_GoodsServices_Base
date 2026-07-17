@@ -1,0 +1,19 @@
+# §C2: Loki datasource, auto-provisioned into Grafana. Fixed uid so the bundled
+# dashboard can reference it.
+apiVersion: 1
+datasources:
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
+    jsonData:
+      maxLines: 1000
+      # §C2 scope C: turn `traceId=...` in a log line into a link to its Tempo trace.
+      derivedFields:
+        # Line body is now JSON, so match the JSON form ("traceId":"<hex>") to link → Tempo.
+        - name: TraceID
+          matcherRegex: '"traceId":"(\w+)"'
+          datasourceUid: tempo
+          url: '$${__value.raw}'

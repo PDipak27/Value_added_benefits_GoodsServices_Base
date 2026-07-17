@@ -1,0 +1,11 @@
+# §C2: load any dashboard JSON in this folder into Grafana on startup.
+apiVersion: 1
+providers:
+  - name: VA-BAGS
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

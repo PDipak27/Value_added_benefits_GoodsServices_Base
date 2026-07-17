@@ -32,6 +32,17 @@ eventuatelocal:
       servers: localhost:9094
 
 management:
+  # §perf: the reservation sweeper is the only self-rooted span here — keep it unsampled so it never
+  # tries to export to Tempo when obs is off. Saga spans still trace under `obs` (they inherit the root).
+  tracing:
+    sampling:
+      probability: 0.0
+  # §perf: no span export unless `obs` is active — old sampled traceparents on Kafka messages
+  # would otherwise force export attempts at Tempo (parent-based sampler honours them).
+  otlp:
+    tracing:
+      export:
+        enabled: false
   endpoints:
     web:
       exposure:
@@ -41,3 +52,15 @@ logging:
   level:
     com.vab: DEBUG
     io.eventuate: INFO
+
+---
+# §perf: `obs` profile — allow OTLP span export to Tempo.
+spring:
+  config:
+    activate:
+      on-profile: obs
+management:
+  otlp:
+    tracing:
+      export:
+        enabled: true

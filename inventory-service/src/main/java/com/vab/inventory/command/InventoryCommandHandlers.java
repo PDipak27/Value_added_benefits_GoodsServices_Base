@@ -12,6 +12,9 @@ import io.eventuate.tram.commands.consumer.CommandHandlers;
 import io.eventuate.tram.commands.consumer.CommandMessage;
 import io.eventuate.tram.messaging.common.Message;
 import io.eventuate.tram.sagas.participant.SagaCommandHandlersBuilder;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
+import io.opentelemetry.context.Context;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Pageable;
@@ -70,6 +73,13 @@ public class InventoryCommandHandlers {
 
     @Transactional
     public Message reserveInventory(CommandMessage<ReserveInventoryCommand> cm) {
+        // §C2 TRACE-DIAG (temporary): did the trace context arrive on the message, and is an
+        // OTel span actually active on this handler thread? (Blank traceId in logs = no active span.)
+        Message raw = cm.getMessage();
+        SpanContext sc = Span.current().getSpanContext();
+        log.info("TRACE-DIAG reserveInventory | headers={} | otelSpanValid={} otelTraceId={} otelSpanId={} | ctx={}",
+                raw.getHeaders(), sc.isValid(), sc.getTraceId(), sc.getSpanId(), Context.current());
+
         ReserveInventoryCommand cmd = cm.getCommand();
         InventoryItem item = items.findByOfferCodeForUpdate(cmd.getOfferCode()).orElse(null);
         if (item == null) {

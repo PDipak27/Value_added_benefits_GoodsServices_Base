@@ -19,6 +19,16 @@
             <groupId>com.vab</groupId>
             <artifactId>shared-events</artifactId>
         </dependency>
+        <!-- §C2 B-2: correlationId filter + Tram interceptor (auto-configured) -->
+        <dependency>
+            <groupId>com.vab</groupId>
+            <artifactId>shared-observability</artifactId>
+        </dependency>
+        <!-- §C2 scope C: Tram/Kafka traceparent propagation (Eventuate producer+consumer interceptors) -->
+        <dependency>
+            <groupId>io.eventuate.tram.springmicrometertracing</groupId>
+            <artifactId>eventuate-tram-spring-micrometer-tracing-starter</artifactId>
+        </dependency>
 
         <!-- ── Spring Boot ───────────────────────────────────────── -->
         <dependency>

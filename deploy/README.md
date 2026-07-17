@@ -107,7 +107,7 @@ verification — order-service is fail-open if it's down); 7 to exercise routing
 > which owns `OTT_HOTSTAR_3M` via a seed row), then `GET /v1/videos/vid_hotstar_ipl/stream`
 > returns `"Playing video: …"` while `…/vid_netflix_film/stream` returns `403`.
 >
-> **Edge auth (§A-3, DD-31):** the **gateway** (`:8080`) and **order-service** are now
+> **Edge auth (§A-3, DD-31):** the **gateway** (`:8089`) and **order-service** are now
 > OAuth2 **resource servers** — start **Keycloak before both** (eager discovery). Call
 > the subscriber surface **through the gateway** with `Authorization: Bearer <token>`;
 > the gateway validates the JWT and relays it downstream. Catalog browse (`/v1/offers/**`)
@@ -115,10 +115,45 @@ verification — order-service is fail-open if it's down); 7 to exercise routing
 > body/param); back-office actions (`retry`/`complete`/`revoke-*`, `/v1/ops/**`) require
 > the **`vab-admin`** realm role (seeded user **`vabadmin` / `vabadmin`**). Get a user
 > token via the direct-access-grant on `vab-ott`:
-> `curl -d grant_type=password -d client_id=vab-ott -d username=alice -d password=alice -d scope=openid \`
-> `  http://localhost:8088/realms/vab/protocol/openid-connect/token`
+> `curl -k -d grant_type=password -d client_id=vab-ott -d username=alice -d password=alice -d scope=openid \`
+> `  https://localhost:8088/realms/vab/protocol/openid-connect/token`
 > The `-Pe2e` suite mints such tokens itself (creating throwaway users via the Keycloak
 > Admin API), so it now needs the **gateway running** too.
+>
+> **Edge TLS (§E2, prod-hardening):** Keycloak (`:8088`) and the gateway (`:8089`) serve
+> **HTTPS** with a locally-trusted **mkcert** cert; the rest stay HTTP (edge-only TLS).
+> **Generate the certs first — Keycloak and the gateway won't start without them:** see
+> [`deploy/tls/README.md`](tls/README.md) (`mkcert -install` with `JAVA_HOME` set, then
+> generate `keycloak.crt.pem`/`.key.pem` + `gateway-keystore.p12`). The issuer is
+> `https://localhost:8088/realms/vab`. To run plain HTTP, set `GATEWAY_SSL_ENABLED=false`,
+> point `KEYCLOAK_ISSUER`/`KEYCLOAK_TOKEN_URI` back to `http://…:8088`, and revert the
+> compose Keycloak block.
+>
+> **Observability — logs (§C2, B-1):** every service now emits **structured JSON** on
+> the console *and* **pushes logs to Loki** (loki4j), while still writing the
+> human-readable `vabags-<svc>.log` files. `docker compose up -d` brings up **Loki**
+> (`:3100`) and **Grafana** (`:3000`, anonymous admin — no login). Open
+> `http://localhost:3000` → the **"VA-BAGS — Logs"** dashboard (or Explore →
+> `{app="vabags"}`), filter by `service`/`level`, free-text search the message. If Loki
+> is down, services still run (the appender buffers/drops — it never blocks). Override
+> the push URL with `-DLOKI_URL=...`.
+>
+> **Observability — correlation (§C2, B-2):** every request gets an `X-Correlation-Id`
+> at the gateway; it's carried through the whole saga over Kafka (Tram
+> `MessageInterceptor`) and stamped on every log line. In the Grafana **"VA-BAGS — Logs"**
+> dashboard, place an order, grab its `correlationId` from any log line, paste it into the
+> **`$correlationId`** box, clear `$service` (All) → you see that one order's journey
+> across gateway → order → inventory → billing → fulfilment → notification, plus the
+> internal HTTP hops order→catalog and fulfilment→ott.
+>
+> **Observability — tracing (§C2, scope C):** services export OTLP spans (default
+> `:4318`) to **Tempo**; the Tram/Kafka `traceparent` propagation is handled by Eventuate's
+> `eventuate-tram-spring-micrometer-tracing-starter` (no custom span code). Sampling is
+> `1.0`. `traceId` is on every log line. In Grafana, a Loki log line's **`traceId` is a
+> link** → opens the **Tempo** span waterfall for that order across all services (the CDC
+> relay shows as a time-gap — expected with the outbox); from a trace you can jump back to
+> its logs. `docker compose up -d` now also starts **Tempo** (`:3200` query, `:4317` OTLP
+> gRPC — the OpenTelemetry SDK default the services export to — and `:4318` OTLP HTTP).
 
 ---
 

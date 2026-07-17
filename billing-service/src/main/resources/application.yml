@@ -31,6 +31,12 @@ eventuatelocal:
       servers: localhost:9094
 
 management:
+  # §perf: no span export unless `obs` is active — old sampled traceparents on Kafka/HTTP hops
+  # would otherwise force export attempts at Tempo. traceId in logs is unaffected.
+  otlp:
+    tracing:
+      export:
+        enabled: false
   endpoints:
     web:
       exposure:
@@ -40,3 +46,15 @@ logging:
   level:
     com.vab: DEBUG
     io.eventuate: INFO
+
+---
+# §perf: `obs` profile — allow OTLP span export to Tempo.
+spring:
+  config:
+    activate:
+      on-profile: obs
+management:
+  otlp:
+    tracing:
+      export:
+        enabled: true

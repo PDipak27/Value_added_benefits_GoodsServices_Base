@@ -17,6 +17,11 @@
          NOT a saga participant: no Tram, no shared-events. It owns its own DB and
          is reached only over plain REST from fulfilment-service. -->
     <dependencies>
+        <!-- §C2 B-2: correlationId HTTP filter (no Tram here, so no interceptor). -->
+        <dependency>
+            <groupId>com.vab</groupId>
+            <artifactId>shared-observability</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

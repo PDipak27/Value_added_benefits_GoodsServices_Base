@@ -32,8 +32,10 @@ ott:
   retry-delay-ms: 200
 
 # ── Keycloak client-credentials for the secured ott-service (§A-1 / DD-29) ──
+# §4: Keycloak defaults to plain HTTP dev mode. For the §E2 edge-TLS setup, set
+# KEYCLOAK_TOKEN_URI=https://... (fulfilment then trusts the mkcert CA via `mkcert -install`).
 keycloak:
-  token-uri: http://localhost:8088/realms/vab/protocol/openid-connect/token
+  token-uri: ${KEYCLOAK_TOKEN_URI:http://localhost:8088/realms/vab/protocol/openid-connect/token}
   client-id: vab-provisioning
   client-secret: vab-provisioning-secret
   scope: ott:provision
@@ -44,6 +46,12 @@ eventuatelocal:
       servers: localhost:9094
 
 management:
+  # §perf: no span export unless `obs` is active — old sampled traceparents on Kafka/HTTP hops
+  # would otherwise force export attempts at Tempo. traceId in logs is unaffected.
+  otlp:
+    tracing:
+      export:
+        enabled: false
   endpoints:
     web:
       exposure:
@@ -53,3 +61,15 @@ logging:
   level:
     com.vab: DEBUG
     io.eventuate: INFO
+
+---
+# §perf: `obs` profile — allow OTLP span export to Tempo.
+spring:
+  config:
+    activate:
+      on-profile: obs
+management:
+  otlp:
+    tracing:
+      export:
+        enabled: true

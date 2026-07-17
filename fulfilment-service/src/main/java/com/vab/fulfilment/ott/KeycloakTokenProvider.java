@@ -34,7 +34,7 @@ public class KeycloakTokenProvider {
 
     public KeycloakTokenProvider(
             RestClient.Builder builder,
-            @Value("${keycloak.token-uri:http://localhost:8088/realms/vab/protocol/openid-connect/token}") String tokenUri,
+            @Value("${keycloak.token-uri:https://localhost:8088/realms/vab/protocol/openid-connect/token}") String tokenUri,
             @Value("${keycloak.client-id:vab-provisioning}") String clientId,
             @Value("${keycloak.client-secret:vab-provisioning-secret}") String clientSecret,
             @Value("${keycloak.scope:ott:provision}") String scope) {

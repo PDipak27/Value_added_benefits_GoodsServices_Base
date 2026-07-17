@@ -1,0 +1,8 @@
+# §E2 edge TLS — locally generated certs/keystores (contain a private key). Never commit.
+*.pem
+*.p12
+*.crt
+*.key
+*.jks
+!.gitignore
+!README.md

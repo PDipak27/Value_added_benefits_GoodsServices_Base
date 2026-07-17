@@ -1,7 +1,9 @@
 package com.vab.order.command.catalog;
 
+import com.vab.observability.Correlation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -26,7 +28,14 @@ public class CatalogClient {
 
     public CatalogClient(RestClient.Builder builder,
                          @Value("${catalog.base-url:http://localhost:8085}") String baseUrl) {
-        this.restClient = builder.baseUrl(baseUrl).build();
+        // §C2 B-2: forward the correlation id so catalog-service's logs join this order's trail.
+        this.restClient = builder.baseUrl(baseUrl)
+                .requestInterceptor((request, body, execution) -> {
+                    String correlationId = MDC.get(Correlation.MDC_CORRELATION_ID);
+                    if (correlationId != null) request.getHeaders().set(Correlation.HEADER, correlationId);
+                    return execution.execute(request, body);
+                })
+                .build();
     }
 
     /**
