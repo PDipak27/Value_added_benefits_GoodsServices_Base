@@ -1,0 +1,55 @@
+# Edge gateway. Exposed to the host via a LoadBalancer Service (Docker Desktop maps it to localhost).
+# SSL is turned off in-cluster (the host-path keystore isn't in the pod); mounting it is a later
+# "learn volumes" exercise. Downstream route targets are repointed at in-cluster Service DNS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: vabags
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: api-gateway }
+  template:
+    metadata:
+      labels: { app: api-gateway }
+    spec:
+      containers:
+        - name: api-gateway
+          image: vabags/api-gateway:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8089
+          envFrom:
+            - configMapRef: { name: vabags-endpoints }
+            - secretRef: { name: vabags-db }
+          env:
+            - { name: GATEWAY_SSL_ENABLED, value: "false" }                       # plain HTTP in-cluster
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_0_URI, value: "http://catalog-service:8085" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_1_URI, value: "http://order-service:8081" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_2_URI, value: "http://order-service:8081" }
+          startupProbe:                     # gate liveness/readiness until boot finishes (slow, JWKS discovery)
+            httpGet: { path: /actuator/health/liveness, port: 8089 }
+            failureThreshold: 30
+            periodSeconds: 5                # up to ~150s to start
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8089 }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8089 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "320Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: vabags
+spec:
+  type: LoadBalancer          # Docker Desktop publishes this on localhost:8089
+  selector: { app: api-gateway }
+  ports:
+    - port: 8089
+      targetPort: 8089

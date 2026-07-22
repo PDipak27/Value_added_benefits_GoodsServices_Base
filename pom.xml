@@ -148,6 +148,23 @@
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
                     <version>${spring-boot.version}</version>
+                    <!-- We import spring-boot-dependencies as a BOM instead of inheriting from
+                         spring-boot-starter-parent, so `repackage` is NOT auto-bound to `package`
+                         (that binding is a feature of the parent, not the BOM). Bind it here so
+                         every executable module produces a layered fat jar without repeating.
+                         Layers config lives at plugin-level so it merges cleanly with any
+                         module-level <configuration> (e.g. <mainClass>). -->
+                    <configuration>
+                        <layers><enabled>true</enabled></layers>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <id>repackage</id>
+                            <goals>
+                                <goal>repackage</goal>
+                            </goals>
+                        </execution>
+                    </executions>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>

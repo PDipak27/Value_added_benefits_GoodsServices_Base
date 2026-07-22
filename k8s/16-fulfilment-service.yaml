@@ -1,0 +1,50 @@
+# Fulfilment service — saga participant (Postgres + Kafka) + Keycloak M2M client-credentials.
+# Calls ott in-cluster, so OTT_BASE_URL is repointed at the ott Service DNS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fulfilment-service
+  namespace: vabags
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: fulfilment-service }
+  template:
+    metadata:
+      labels: { app: fulfilment-service }
+    spec:
+      containers:
+        - name: fulfilment-service
+          image: vabags/fulfilment-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8086
+          envFrom:
+            - configMapRef: { name: vabags-endpoints }
+            - secretRef: { name: vabags-db }
+          env:
+            - { name: OTT_BASE_URL, value: "http://ott-service:8087" }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8086 }
+            failureThreshold: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8086 }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8086 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "384Mi" }
+            limits: { memory: "640Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fulfilment-service
+  namespace: vabags
+spec:
+  selector: { app: fulfilment-service }
+  ports:
+    - port: 8086
+      targetPort: 8086

@@ -1,0 +1,35 @@
+# Namespace + shared config for all VA-BAGS pods (Design/11 §3.4).
+# The ConfigMap is injected into EVERY service via envFrom; services simply ignore the
+# keys they don't use (e.g. inventory has no Mongo starter, so SPRING_DATA_MONGODB_URI is inert).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vabags
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vabags-endpoints
+  namespace: vabags
+data:
+  # ── outside-the-cluster deps → host.docker.internal ──────────────────────
+  SPRING_DATASOURCE_URL: jdbc:postgresql://host.docker.internal:5432/vab
+  SPRING_DATA_MONGODB_URI: mongodb://host.docker.internal:27017/vab
+  SPRING_DATA_REDIS_HOST: host.docker.internal
+  SPRING_DATA_REDIS_PORT: "6379"
+  EVENTUATELOCAL_KAFKA_BOOTSTRAP_SERVERS: host.docker.internal:9095
+  KEYCLOAK_ISSUER: http://host.docker.internal:8088/realms/vab
+  KEYCLOAK_TOKEN_URI: http://host.docker.internal:8088/realms/vab/protocol/openid-connect/token
+  # ── runtime knobs ────────────────────────────────────────────────────────
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"   # serve /actuator/health/liveness & /readiness
+  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70.0"       # let the JVM heap track the container memory limit
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vabags-db
+  namespace: vabags
+type: Opaque
+stringData:                       # stringData = plaintext here; k8s base64-encodes it at rest
+  SPRING_DATASOURCE_USERNAME: eventuate
+  SPRING_DATASOURCE_PASSWORD: eventuate

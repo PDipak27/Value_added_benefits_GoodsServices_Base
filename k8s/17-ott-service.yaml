@@ -1,0 +1,48 @@
+# OTT service — Postgres (entitlements) + Keycloak (resource server for provisioning + OIDC login RP).
+# Uses the shared datasource + KEYCLOAK_ISSUER; no extra env.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ott-service
+  namespace: vabags
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ott-service }
+  template:
+    metadata:
+      labels: { app: ott-service }
+    spec:
+      containers:
+        - name: ott-service
+          image: vabags/ott-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8087
+          envFrom:
+            - configMapRef: { name: vabags-endpoints }
+            - secretRef: { name: vabags-db }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8087 }
+            failureThreshold: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8087 }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8087 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "384Mi" }
+            limits: { memory: "640Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ott-service
+  namespace: vabags
+spec:
+  selector: { app: ott-service }
+  ports:
+    - port: 8087
+      targetPort: 8087

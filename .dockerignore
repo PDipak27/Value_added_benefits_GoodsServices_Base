@@ -1,0 +1,23 @@
+# Keep the Docker build context small & keep host-only artifacts (certs, docs) out of images.
+# Exclude build output — but KEEP the packaged service jars (the image copies them from target/).
+**/target/*
+!**/target/*.jar
+**/bin
+.git
+.gitignore
+.github
+Design
+k8s
+deploy
+docker-compose*.yml
+Dockerfile
+.dockerignore
+**/.settings
+**/.classpath
+**/.project
+**/.factorypath
+**/*.iml
+.idea
+.vscode
+**/*.log
+**/*.log.*

@@ -1,0 +1,23 @@
+# Layer this over docker-compose.yml when the app services run in Kubernetes (Design/11 §3.3).
+# Pods reach compose infra via host.docker.internal, which needs two tweaks:
+#   1) a Kafka listener advertised as host.docker.internal (else Kafka hands pods "localhost:9094"),
+#   2) a pinned Keycloak hostname so the JWT issuer is the same for pods and the browser.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.k8s-infra.yml up -d
+#
+# Also add a hosts-file entry so the HOST (browser, curl, e2e) resolves the same name:
+#   Windows: C:\Windows\System32\drivers\etc\hosts  ->  127.0.0.1 host.docker.internal
+#   (verify with:  ping host.docker.internal)
+services:
+  kafka:
+    environment:
+      # add a dedicated K8S listener on :9095 advertised as host.docker.internal:9095
+      KAFKA_LISTENERS: "INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094,K8S://0.0.0.0:9095,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:9092,EXTERNAL://localhost:9094,K8S://host.docker.internal:9095"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,K8S:PLAINTEXT,CONTROLLER:PLAINTEXT"
+    ports:
+      - "9095:9095"   # concatenated with the base 9092/9094 mappings
+  keycloak:
+    environment:
+      # pin the issuer/frontend URL so pods (host.docker.internal) and browser agree
+      KC_HOSTNAME: http://host.docker.internal:8088

@@ -1,0 +1,50 @@
+# Catalog service — Mongo (vab_catalog) + Redis (L2 cache). No Postgres/Kafka.
+# Overrides the shared Mongo URI to point at the catalog DB.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-service
+  namespace: vabags
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: catalog-service }
+  template:
+    metadata:
+      labels: { app: catalog-service }
+    spec:
+      containers:
+        - name: catalog-service
+          image: vabags/catalog-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8085
+          envFrom:
+            - configMapRef: { name: vabags-endpoints }
+            - secretRef: { name: vabags-db }
+          env:
+            - { name: SPRING_DATA_MONGODB_URI, value: "mongodb://host.docker.internal:27017/vab_catalog" }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8085 }
+            failureThreshold: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8085 }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8085 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "320Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-service
+  namespace: vabags
+spec:
+  selector: { app: catalog-service }
+  ports:
+    - port: 8085
+      targetPort: 8085
