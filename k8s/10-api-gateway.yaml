@@ -25,21 +25,34 @@ spec:
             - secretRef: { name: vabags-db }
           env:
             - { name: GATEWAY_SSL_ENABLED, value: "false" }                       # plain HTTP in-cluster
-            - { name: SPRING_CLOUD_GATEWAY_ROUTES_0_URI, value: "http://catalog-service:8085" }
-            - { name: SPRING_CLOUD_GATEWAY_ROUTES_1_URI, value: "http://order-service:8081" }
-            - { name: SPRING_CLOUD_GATEWAY_ROUTES_2_URI, value: "http://order-service:8081" }
+            # Spring binds a list from ONE source (no cross-source merge), so once env defines any
+            # routes[n].* it owns the whole list — we must supply id+uri+predicates for each route,
+            # not just uri (else predicates come back empty and startup fails).
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_0_ID,           value: "catalog-service" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_0_URI,          value: "http://catalog-service:8085" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_0_PREDICATES_0, value: "Path=/v1/offers/**" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_1_ID,           value: "order-service" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_1_URI,          value: "http://order-service:8081" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_1_PREDICATES_0, value: "Path=/v1/orders/**" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_2_ID,           value: "order-entitlements" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_2_URI,          value: "http://order-service:8081" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_2_PREDICATES_0, value: "Path=/v1/entitlements/**" }
           startupProbe:                     # gate liveness/readiness until boot finishes (slow, JWKS discovery)
             httpGet: { path: /actuator/health/liveness, port: 8089 }
-            failureThreshold: 30
-            periodSeconds: 5                # up to ~150s to start
+            failureThreshold: 5
+            periodSeconds: 60                # up to ~300s to start (slow boot under CPU contention)
           livenessProbe:
             httpGet: { path: /actuator/health/liveness, port: 8089 }
+            failureThreshold: 6
             periodSeconds: 10
+            timeoutSeconds: 5
           readinessProbe:
             httpGet: { path: /actuator/health/readiness, port: 8089 }
-            periodSeconds: 5
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
           resources:
-            requests: { cpu: "100m", memory: "320Mi" }
+            requests: { cpu: "100m", memory: "256Mi" }
             limits: { memory: "512Mi" }
 ---
 apiVersion: v1

@@ -41,6 +41,7 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_HEAP_OPTS: "-Xms64m -Xmx256m"   # §perf lever-2: cap ZK JVM heap
       TZ: Asia/Kolkata
     healthcheck:
       test: ["CMD", "bash", "-c", "zookeeper-shell localhost:2181 ls / >/dev/null 2>&1"]
@@ -105,7 +106,7 @@ services:
       EVENTUATE_CDC_READER_TRAMREADER_LEADERSHIPLOCKPATH: /eventuate/cdc/leader/tram
       EVENTUATE_CDC_READER_TRAMREADER_OUTBOXID: 2
       
-      JAVA_OPTS: "-Xmx512m"
+      JAVA_OPTS: "-Xmx320m"                 # §perf lever-2: was 512m
       TZ: Asia/Kolkata
     healthcheck:
       # CDC exposes Spring Boot Actuator on container port 8080.
@@ -121,6 +122,7 @@ services:
   mongo:
     image: mongo:7
     container_name: vab-mongo
+    command: ["--wiredTigerCacheSizeGB", "0.25"]   # §perf lever-2: cap Mongo cache (default ≈ 50% RAM)
     ports:
       - "27017:27017"
     volumes:
@@ -155,6 +157,7 @@ services:
       - "8090:8080"
     environment:
       QUARKUS_PROFILE: dev
+      JAVA_TOOL_OPTIONS: "-Xmx192m"          # §perf lever-2: cap Apicurio (Quarkus) heap
       TZ: Asia/Kolkata
 
   # ── Keycloak — OIDC Provider (DD-29 / §A-1), Postgres-backed ──────────────
@@ -182,6 +185,7 @@ services:
       KC_HEALTH_ENABLED: "true"
       KC_HTTP_ENABLED: "true"
       KC_HOSTNAME_STRICT: "false"
+      JAVA_OPTS_KC_HEAP: "-Xms64m -Xmx384m"   # §perf lever-2: cap Keycloak JVM heap
       TZ: Asia/Kolkata
     ports:
       # Host 8088 → container 8080 (HTTP dev) by default; TLS mode sets KC_HTTP_PORT=8443.

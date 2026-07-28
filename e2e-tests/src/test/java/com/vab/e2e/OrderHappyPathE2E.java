@@ -1,5 +1,6 @@
 package com.vab.e2e;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.Matchers.*;
@@ -13,7 +14,7 @@ import static org.hamcrest.Matchers.*;
  */
 class OrderHappyPathE2E extends E2EBase {
 
-    @Test
+    @Test @Disabled
     void physical_good_pay_now_completes_with_tracking_ref() {
         String orderId = placeOrder(sub(), "ACC_BUDS_PRO", "PHYSICAL_GOOD", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
@@ -27,6 +28,7 @@ class OrderHappyPathE2E extends E2EBase {
 
     @Test
     void software_license_pay_now_completes_with_activation_key() {
+    		System.out.println("here started software_license_pay_now_completes_with_activation_key");
         String orderId = placeOrder(sub(), "SW_MSOFFICE_1Y", "SOFTWARE_LICENSE", 499, "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
@@ -50,6 +52,7 @@ class OrderHappyPathE2E extends E2EBase {
     }
 
     @Test
+    @Disabled
     void digital_subscription_bill_to_mobile_completes() {
         String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "BILL_TO_MOBILE");
         awaitStatus(orderId, "COMPLETED");

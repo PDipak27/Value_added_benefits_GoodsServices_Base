@@ -12,17 +12,27 @@ metadata:
   name: vabags-endpoints
   namespace: vabags
 data:
-  # ── outside-the-cluster deps → host.docker.internal ──────────────────────
-  SPRING_DATASOURCE_URL: jdbc:postgresql://host.docker.internal:5432/vab
-  SPRING_DATA_MONGODB_URI: mongodb://host.docker.internal:27017/vab
-  SPRING_DATA_REDIS_HOST: host.docker.internal
+  # ── outside-the-cluster deps → host.k3d.internal ──────────────────────
+  SPRING_DATASOURCE_URL: jdbc:postgresql://host.k3d.internal:5432/vab
+  SPRING_DATA_MONGODB_URI: mongodb://host.k3d.internal:27017/vab
+  SPRING_DATA_REDIS_HOST: host.k3d.internal
   SPRING_DATA_REDIS_PORT: "6379"
-  EVENTUATELOCAL_KAFKA_BOOTSTRAP_SERVERS: host.docker.internal:9095
-  KEYCLOAK_ISSUER: http://host.docker.internal:8088/realms/vab
-  KEYCLOAK_TOKEN_URI: http://host.docker.internal:8088/realms/vab/protocol/openid-connect/token
+  EVENTUATELOCAL_KAFKA_BOOTSTRAP_SERVERS: host.k3d.internal:9095
+  KEYCLOAK_ISSUER: http://host.k3d.internal:8088/realms/vab
+  KEYCLOAK_TOKEN_URI: http://host.k3d.internal:8088/realms/vab/protocol/openid-connect/token
+  # ── DB connection budget ─────────────────────────────────────────────────
+  # HikariCP defaults to 10 conns/service → 8 services (+Keycloak+CDC) exhausts Postgres
+  # max_connections (~100). Cap small: 8 × 3 = 24, plenty for dev, well under the limit.
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "3"
+  SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "1"
   # ── runtime knobs ────────────────────────────────────────────────────────
+  # logback's APP_FILE appender defaults to a Windows host path; point it at a container-writable
+  # dir (non-root `spring` can't write /app). /tmp is ephemeral disk — fine, kubectl logs uses stdout.
+  APP_LOG_DIR: /tmp
   MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"   # serve /actuator/health/liveness & /readiness
-  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=70.0"       # let the JVM heap track the container memory limit
+  # §perf: cap heap+metaspace, low-overhead SerialGC, and -XX:TieredStopAtLevel=1 = C1-only JIT
+  # → much faster startup under CPU contention (skips the costly C2 compiler; fine for dev pods).
+  JAVA_TOOL_OPTIONS: "-Xmx224m -XX:MaxMetaspaceSize=176m -XX:+UseSerialGC -XX:TieredStopAtLevel=1"
 ---
 apiVersion: v1
 kind: Secret

@@ -23,20 +23,24 @@ spec:
             - configMapRef: { name: vabags-endpoints }
             - secretRef: { name: vabags-db }
           env:
-            - { name: SPRING_DATA_MONGODB_URI, value: "mongodb://host.docker.internal:27017/vab_catalog" }
+            - { name: SPRING_DATA_MONGODB_URI, value: "mongodb://host.k3d.internal:27017/vab_catalog" }
           startupProbe:
             httpGet: { path: /actuator/health/liveness, port: 8085 }
-            failureThreshold: 30
-            periodSeconds: 5
+            failureThreshold: 5
+            periodSeconds: 60
           livenessProbe:
             httpGet: { path: /actuator/health/liveness, port: 8085 }
+            failureThreshold: 6
             periodSeconds: 10
+            timeoutSeconds: 5
           readinessProbe:
             httpGet: { path: /actuator/health/readiness, port: 8085 }
-            periodSeconds: 5
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
           resources:
-            requests: { cpu: "100m", memory: "320Mi" }
-            limits: { memory: "512Mi" }
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { memory: "256Mi" }
 ---
 apiVersion: v1
 kind: Service

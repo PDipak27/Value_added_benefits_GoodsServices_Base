@@ -35,7 +35,10 @@ abstract class E2EBase {
     protected static final String CATALOG  = prop("vab.catalog.url",  "http://localhost:8085");
     protected static final String OTT       = prop("vab.ott.url",      "http://localhost:8087");
     protected static final String KEYCLOAK  = prop("vab.keycloak.url", "http://localhost:8088");
-
+    static {
+    System.out.println("GW uRL:"+System.getProperty("vab.gateway.url"));
+    System.out.println("keyCloak uRL:"+	System.getProperty("vab.keycloak.url") );
+    }
     /** Generous: the async path is POST → Kafka command/reply → CDC relay → projection. */
     protected static final Duration SETTLE = Duration.ofSeconds(45);
 

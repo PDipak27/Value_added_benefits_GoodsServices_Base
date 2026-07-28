@@ -26,17 +26,21 @@ spec:
             - { name: CATALOG_BASE_URL, value: "http://catalog-service:8085" }
           startupProbe:
             httpGet: { path: /actuator/health/liveness, port: 8081 }
-            failureThreshold: 30
-            periodSeconds: 5
+            failureThreshold: 5
+            periodSeconds: 60
           livenessProbe:
             httpGet: { path: /actuator/health/liveness, port: 8081 }
+            failureThreshold: 6
             periodSeconds: 10
+            timeoutSeconds: 5
           readinessProbe:
             httpGet: { path: /actuator/health/readiness, port: 8081 }
-            periodSeconds: 5
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
           resources:
-            requests: { cpu: "100m", memory: "384Mi" }
-            limits: { memory: "640Mi" }
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
 ---
 apiVersion: v1
 kind: Service
