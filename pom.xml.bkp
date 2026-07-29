@@ -8,21 +8,20 @@
     <artifactId>va-bags</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
-    <name>VA-BAGS :: Parent (Lite)</name>
+    <name>VA-BAGS :: Parent</name>
 
-    <!-- LITE aggregator (CI/CD + deployment practice). Same GAV as the full parent
-         (preserved as pom.xml.bkp) so the untouched original modules still resolve
-         their parent via the default ../pom.xml, and the full build stays runnable
-         with:  mvn -f pom.xml.bkp ...
-         Lite = api-gateway + saga orchestrator + 2 participants. See Design/lite-*. -->
     <modules>
         <module>shared-events</module>
         <module>shared-observability</module>
         <module>api-gateway</module>
-        <module>lite-order-service</module>
-        <module>lite-inventory-service</module>
-        <module>lite-billing-service</module>
-        <module>lite-e2e-tests</module>
+        <module>catalog-service</module>
+        <module>order-service</module>
+        <module>inventory-service</module>
+        <module>billing-service</module>
+        <module>fulfilment-service</module>
+        <module>notification-service</module>
+        <module>ott-service</module>
+        <module>e2e-tests</module>
     </modules>
 
     <properties>

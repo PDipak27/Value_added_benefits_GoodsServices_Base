@@ -1,0 +1,163 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# VA-BAGS LITE infra — self-contained (Postgres + Kafka KRaft + eventuate-cdc).
+# Trimmed from docker-compose.yml: dropped mongo, redis, apicurio, keycloak and the
+# `obs` stack. The 4 Lite services (api-gateway, lite-order/inventory/billing) run as
+# jars on the host and connect to the published ports below. See Design/lite-cutlist.md.
+#
+#   Bring up:  docker compose -f docker-compose.lite.yml up -d
+#   Run apps:  each service with -Dspring.profiles.active=lite (gateway) / default (others)
+#
+# NOTE on ZooKeeper: Kafka is KRaft (ZK-free). The single `zookeeper` below exists
+# ONLY for eventuate-cdc leadership election, not for Kafka.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+
+  # ── Postgres — write model + Tram outbox (self-contained in Lite) ─────────
+  postgres:
+    image: postgres:18
+    container_name: vab-lite-postgres
+    #profiles: ["oncloud"]
+    environment:
+      POSTGRES_DB: vab
+      POSTGRES_USER: eventuate
+      POSTGRES_PASSWORD: eventuate
+      TZ: Asia/Kolkata
+    ports:
+      - "5433:5432"
+    volumes:
+      - lite_pg_data:/var/lib/postgresql
+      # Eventuate schema bootstrap — ES + Tram messaging tables (01) AND the Tram
+      # saga orchestration tables (04). Both are needed because nothing auto-runs the
+      # eventuate flyway scripts; per-service tables come from each service's own
+      # Flyway on startup. (02-wal / 03-keycloak are intentionally omitted.)
+      - ./deploy/postgres-init/01-eventuate-schema.sql:/docker-entrypoint-initdb.d/01-eventuate-schema.sql:ro
+      - ./deploy/postgres-init/04-tram-saga-schema.sql:/docker-entrypoint-initdb.d/04-tram-saga-schema.sql:ro
+    networks:
+      - lite-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eventuate -d vab"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # ── Kafka (KRaft — no ZooKeeper) ─────────────────────────────────────────
+  kafka:
+    image: apache/kafka:3.7.1
+    container_name: vab-lite-kafka
+    networks:
+      - lite-network
+    ports:
+      - "9092:9092"   # docker-network internal (cdc → kafka:9092)
+      - "9094:9094"   # host external (services → localhost:9094)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: "INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:9092,EXTERNAL://localhost:9094"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_HEAP_OPTS: "-Xmx256m -Xms128m"
+      TZ: Asia/Kolkata
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 15s
+      retries: 12
+      start_period: 60s
+
+  # ── ZooKeeper — eventuate-cdc leadership ONLY (NOT used by Kafka/KRaft) ────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.7.1
+    container_name: vab-lite-zk
+    networks:
+      - lite-network
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_HEAP_OPTS: "-Xms64m -Xmx256m"
+      TZ: Asia/Kolkata
+    healthcheck:
+      test: ["CMD", "bash", "-c", "zookeeper-shell localhost:2181 ls / >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 15s
+      retries: 12
+      start_period: 30s
+
+  # ── Eventuate CDC — Postgres polling → Kafka (transactional outbox relay) ──
+  eventuate-cdc:
+    image: eventuateio/eventuate-cdc-service:0.19.0.RELEASE
+    container_name: vab-lite-cdc
+    networks:
+      - lite-network
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      zookeeper:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/vab
+      #SPRING_DATASOURCE_URL: jdbc:postgresql://host.docker.internal:5432/vab
+      SPRING_DATASOURCE_USERNAME: eventuate
+      SPRING_DATASOURCE_PASSWORD: eventuate
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+
+      EVENTUATELOCAL_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EVENTUATELOCAL_ZOOKEEPER_CONNECTION_STRING: zookeeper:2181
+      SPRING_PROFILES_ACTIVE: EventuatePolling,Kafka
+
+      EVENTUATE_CDC_PIPELINE_LOCALPIPELINE_TYPE: eventuate-local
+      EVENTUATE_CDC_PIPELINE_LOCALPIPELINE_READER: localreader
+      EVENTUATE_CDC_PIPELINE_LOCALPIPELINE_EVENTUATEDATABASESCHEMA: eventuate
+
+      EVENTUATE_CDC_PIPELINE_TRAMPIPELINE_TYPE: eventuate-tram
+      EVENTUATE_CDC_PIPELINE_TRAMPIPELINE_READER: tramreader
+      EVENTUATE_CDC_PIPELINE_TRAMPIPELINE_EVENTUATEDATABASESCHEMA: eventuate
+
+      EVENTUATE_CDC_READER_LOCALREADER_TYPE: polling
+      EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEURL: jdbc:postgresql://postgres:5432/vab
+      #EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEURL: jdbc:postgresql://host.docker.internal:5432/vab
+      EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEUSERNAME: eventuate
+      EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEPASSWORD: eventuate
+      EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEDRIVERCLASSNAME: org.postgresql.Driver
+      EVENTUATE_CDC_READER_LOCALREADER_LEADERSHIPLOCKPATH: /eventuate/cdc/leader/local
+      EVENTUATE_CDC_READER_LOCALREADER_OUTBOXID: 1
+
+      EVENTUATE_CDC_READER_TRAMREADER_TYPE: polling
+      EVENTUATE_CDC_READER_TRAMREADER_DATASOURCEURL: jdbc:postgresql://postgres:5432/vab
+      #EVENTUATE_CDC_READER_TRAMREADER_DATASOURCEURL: jdbc:postgresql://host.docker.internal:5432/vab
+      EVENTUATE_CDC_READER_TRAMREADER_DATASOURCEUSERNAME: eventuate
+      EVENTUATE_CDC_READER_TRAMREADER_DATASOURCEPASSWORD: eventuate
+      EVENTUATE_CDC_READER_TRAMREADER_DATASOURCEDRIVERCLASSNAME: org.postgresql.Driver
+      EVENTUATE_CDC_READER_TRAMREADER_LEADERSHIPLOCKPATH: /eventuate/cdc/leader/tram
+      EVENTUATE_CDC_READER_TRAMREADER_OUTBOXID: 2
+
+      JAVA_OPTS: "-Xmx320m"
+      TZ: Asia/Kolkata
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 120s
+    restart: on-failure
+
+volumes:
+  lite_pg_data:
+networks:
+  lite-network:
+    name: lite-network
+    driver: bridge

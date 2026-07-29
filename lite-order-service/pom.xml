@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.vab</groupId>
+        <artifactId>va-bags</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>lite-order-service</artifactId>
+    <name>VA-BAGS :: Lite Order Service</name>
+
+    <dependencies>
+        <!-- ── Internal ─────────────────────────────────────────── -->
+        <dependency>
+            <groupId>com.vab</groupId>
+            <artifactId>shared-events</artifactId>
+        </dependency>
+        <!-- §C2 B-2: correlationId filter + Tram interceptor (auto-configured) -->
+        <dependency>
+            <groupId>com.vab</groupId>
+            <artifactId>shared-observability</artifactId>
+        </dependency>
+        <!-- §C2 scope C: Tram/Kafka traceparent propagation (Eventuate producer+consumer interceptors) -->
+        <dependency>
+            <groupId>io.eventuate.tram.springmicrometertracing</groupId>
+            <artifactId>eventuate-tram-spring-micrometer-tracing-starter</artifactId>
+        </dependency>
+
+        <!-- ── Spring Boot ───────────────────────────────────────── -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- LITE: dropped spring-boot-starter-data-mongodb (CQRS read side collapsed
+             to the Postgres write model) and spring-boot-starter-oauth2-resource-server
+             (auth off in Lite; no Keycloak). See Design/lite-cutlist.md. -->
+
+        <!-- ── Eventuate Tram — outbox + Kafka transport ────────────── -->
+        <!--   Post-DD-14: state-stored aggregate, no Eventuate Local ES.  -->
+        <dependency>
+            <groupId>io.eventuate.tram.core</groupId>
+            <artifactId>eventuate-tram-spring-jdbc-kafka</artifactId>
+        </dependency>
+
+        <!-- ── Eventuate Tram domain events — DomainEventPublisher + ──── -->
+        <!--   DomainEventDispatcher: publish via outbox / consume projections -->
+        <dependency>
+            <groupId>io.eventuate.tram.core</groupId>
+            <artifactId>eventuate-tram-spring-events</artifactId>
+        </dependency>
+
+        <!-- ── Eventuate Tram Sagas — orchestration DSL ─────────────── -->
+        <!--   Simple DSL starter: registers SagaManager, step builders   -->
+        <dependency>
+            <groupId>io.eventuate.tram.sagas</groupId>
+            <artifactId>eventuate-tram-sagas-spring-orchestration-simple-dsl-starter</artifactId>
+        </dependency>
+
+        <!-- ── Flyway — auto-runs tram + saga schema migrations ─────── -->
+        <dependency>
+            <groupId>io.eventuate.tram.core</groupId>
+            <artifactId>eventuate-tram-spring-flyway</artifactId>
+            <exclusions>
+				<exclusion>
+					<groupId>org.flywaydb</groupId>
+					<artifactId>flyway-mysql</artifactId>
+				</exclusion>
+			</exclusions>
+        </dependency>
+        <dependency>
+            <groupId>io.eventuate.tram.sagas</groupId>
+            <artifactId>eventuate-tram-sagas-spring-flyway</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+		<!-- ── Database driver ───────────────────────────────────────── -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ── Integration tests: real Postgres via Testcontainers ─────── -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                <mainClass>com.vab.order.OrderServiceApplication</mainClass>
+            		</configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

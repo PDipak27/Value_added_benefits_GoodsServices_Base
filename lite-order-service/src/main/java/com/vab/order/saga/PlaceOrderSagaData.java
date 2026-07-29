@@ -1,0 +1,99 @@
+package com.vab.order.saga;
+
+import java.time.Instant;
+
+/**
+ * Carries all mutable state the Saga orchestrator needs across steps.
+ * Persisted by Eventuate Tram Sagas — must be serializable (Jackson).
+ */
+public class PlaceOrderSagaData {
+
+    private String orderId;
+    private String subscriberId;
+    private String offerCode;
+    private String productType;   // PHYSICAL_GOOD | DIGITAL_SUBSCRIPTION | SOFTWARE_LICENSE
+    private long    amount;
+    private String  currency;
+    private String  billingMode;
+    private Integer termMonths;   // snapshot from catalog at placement; drives entitlement validUntil
+
+    // Populated as Saga progresses
+    private String reservationId;   // PAY_NOW reserve / BILL_TO_MOBILE allocate
+    private String authId;          // PAY_NOW authorize
+    private String captureId;       // PAY_NOW capture
+    private String ledgerEntryId;   // BILL_TO_MOBILE next-cycle charge
+
+    // Forward-recovery branch (DD-26): set post-pivot when fulfilment fails for a
+    // non-transient reason, or a user cancel lands in the pre-fulfil window. Gates
+    // the refund/reverse + release steps and the CANCELLED_REFUNDED finalize.
+    private boolean forwardRecover;
+    private String  cancelReason;
+
+    // Park branch (DD-27): set post-pivot when OTT provisioning fails
+    // (OrderProvisioningFailed reply). Distinct from forwardRecover — the charge is
+    // NOT unwound; finalize parks the order in FULFILMENT_FAILED for admin re-drive.
+    private boolean provisioningFailed;
+    private String  provisioningFailureReason;
+
+    // Fulfilment outcome (exactly one artifact populated, per productType)
+    private String  fulfilmentRef;
+    private String  trackingRef;    // PHYSICAL_GOOD
+    private String  activationKey;  // SOFTWARE_LICENSE (pre-allocated at reserve)
+    private String  externalRef;    // DIGITAL_SUBSCRIPTION
+    private Instant validFrom;      // benefit activation (set on OrderFulfilled)
+    private Instant validUntil;     // benefit expiry (null = perpetual)
+
+    public PlaceOrderSagaData() {}
+
+    public PlaceOrderSagaData(String orderId, String subscriberId, String offerCode,
+                               String productType, long amount, String currency, String billingMode,
+                               Integer termMonths) {
+        this.orderId      = orderId;
+        this.subscriberId = subscriberId;
+        this.offerCode    = offerCode;
+        this.productType  = productType;
+        this.amount       = amount;
+        this.currency     = currency;
+        this.billingMode  = billingMode;
+        this.termMonths   = termMonths;
+    }
+
+    public String getOrderId()       { return orderId; }
+    public String getSubscriberId()  { return subscriberId; }
+    public String getOfferCode()     { return offerCode; }
+    public String getProductType()   { return productType; }
+    public long   getAmount()        { return amount; }
+    public String getCurrency()      { return currency; }
+    public String getBillingMode()   { return billingMode; }
+    public String getReservationId() { return reservationId; }
+    public String getAuthId()        { return authId; }
+    public String  getCaptureId()    { return captureId; }
+    public boolean isForwardRecover(){ return forwardRecover; }
+    public String  getCancelReason() { return cancelReason; }
+    public boolean isProvisioningFailed()       { return provisioningFailed; }
+    public String  getProvisioningFailureReason(){ return provisioningFailureReason; }
+    public String getLedgerEntryId() { return ledgerEntryId; }
+    public String getFulfilmentRef() { return fulfilmentRef; }
+    public String getTrackingRef()   { return trackingRef; }
+    public String getActivationKey() { return activationKey; }
+    public String  getExternalRef()   { return externalRef; }
+    public Integer getTermMonths()    { return termMonths; }
+    public Instant getValidFrom()     { return validFrom; }
+    public Instant getValidUntil()    { return validUntil; }
+
+    public void setReservationId(String reservationId) { this.reservationId = reservationId; }
+    public void setProductType(String productType)     { this.productType = productType; }
+    public void setAuthId(String authId)               { this.authId = authId; }
+    public void setCaptureId(String captureId)         { this.captureId = captureId; }
+    public void setForwardRecover(boolean forwardRecover) { this.forwardRecover = forwardRecover; }
+    public void setCancelReason(String cancelReason)   { this.cancelReason = cancelReason; }
+    public void setProvisioningFailed(boolean provisioningFailed) { this.provisioningFailed = provisioningFailed; }
+    public void setProvisioningFailureReason(String reason)       { this.provisioningFailureReason = reason; }
+    public void setLedgerEntryId(String ledgerEntryId) { this.ledgerEntryId = ledgerEntryId; }
+    public void setFulfilmentRef(String fulfilmentRef) { this.fulfilmentRef = fulfilmentRef; }
+    public void setTrackingRef(String trackingRef)     { this.trackingRef = trackingRef; }
+    public void setActivationKey(String activationKey) { this.activationKey = activationKey; }
+    public void setExternalRef(String externalRef)     { this.externalRef = externalRef; }
+    public void setValidFrom(Instant validFrom)        { this.validFrom = validFrom; }
+    public void setValidUntil(Instant validUntil)      { this.validUntil = validUntil; }
+}

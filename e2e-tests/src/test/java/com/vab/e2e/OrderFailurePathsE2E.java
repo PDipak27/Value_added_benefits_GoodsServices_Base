@@ -1,7 +1,5 @@
 package com.vab.e2e;
 
-import java.util.UUID;
-
 import org.junit.jupiter.api.Test;
 
 /**

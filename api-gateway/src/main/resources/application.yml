@@ -92,3 +92,27 @@ management:
     tracing:
       export:
         enabled: true
+
+---
+# LITE profile — auth off, plain HTTP, order route only. See Design/lite-cutlist.md.
+#   - No Keycloak/OIDC: exclude the reactive OAuth2 resource-server auto-config so the
+#     (unused) issuer-uri never triggers eager JWKS discovery; LiteSecurityConfig permits all.
+#   - Plain HTTP (no keystore needed on the box).
+#   - Route list is REPLACED (list props don't merge): only /v1/orders/** → lite-order-service.
+spring:
+  config:
+    activate:
+      on-profile: lite
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.security.oauth2.resource.reactive.ReactiveOAuth2ResourceServerAutoConfiguration
+  cloud:
+    gateway:
+      routes:
+        - id: lite-order-service
+          uri: ${ORDER_SERVICE_URI:http://localhost:8081}
+          predicates:
+            - Path=/v1/orders/**
+server:
+  ssl:
+    enabled: false
