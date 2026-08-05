@@ -1,0 +1,51 @@
+# Lite billing service — pure saga participant (Postgres + Kafka). No extra env beyond shared config.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lite-billing-service
+  namespace: vabags-lite
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: lite-billing-service }
+  template:
+    metadata:
+      labels: { app: lite-billing-service }
+    spec:
+      containers:
+        - name: lite-billing-service
+          image: vabags/lite-billing-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8083
+          envFrom:
+            - configMapRef: { name: vabags-lite-endpoints }
+            - secretRef: { name: vabags-lite-db }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8083 }
+            failureThreshold: 5
+            periodSeconds: 60
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8083 }
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8083 }
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lite-billing-service
+  namespace: vabags-lite
+spec:
+  selector: { app: lite-billing-service }
+  ports:
+    - port: 8083
+      targetPort: 8083

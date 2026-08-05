@@ -1,0 +1,44 @@
+# One image for every VA-BAGS *Lite* service (mirrors ./Dockerfile, + IST timezone).
+#
+# Build the jars ON THE HOST first (the build container has no ~/.m2 / repo access):
+#   mvn -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am -DskipTests package
+# Then build an image per Lite service:
+#   docker build -f Dockerfile.lite --build-arg MODULE=lite-order-service -t vabags/lite-order-service:dev .
+#   (api-gateway is shared with the full build; image name kept as api-gateway)
+#
+# 2 stages: (1) crack the Spring Boot layered jar open, (2) copy the layers into a tiny non-root
+# JRE runtime. The layer split lets Docker cache dependencies separately from app code.
+
+# ---------- stage 1: extract layers from the pre-built jar ----------
+FROM eclipse-temurin:17-jre AS layers
+WORKDIR /app
+ARG MODULE
+COPY ${MODULE}/target/*.jar app.jar
+# the repackaged boot jar (target/*.jar; .jar.original is skipped)
+RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination extracted
+
+# ---------- stage 2: runtime ----------
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+
+# ── IST timezone (Asia/Kolkata) ──────────────────────────────────────────────
+# Two layers of correctness:
+#   1. OS clock → /etc/localtime (logback file/console stamps, any non-JVM tooling).
+#   2. JVM → -Duser.timezone. IMPORTANT: without it the JVM default resolves to the
+#      legacy "Asia/Calcutta", which pgjdbc sends as `SET TimeZone` and postgres:18
+#      REJECTS (Flyway then fails). Forcing "Asia/Kolkata" avoids that.
+# Note: in k8s the vabags-lite ConfigMap sets JAVA_TOOL_OPTIONS (heap flags), which
+# OVERRIDES this ENV entirely — so -Duser.timezone is ALSO included there. This ENV
+# covers standalone `docker run` / compose.
+ENV TZ=Asia/Kolkata
+ENV JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Kolkata"
+
+RUN useradd -r spring                    # never run as root
+COPY --from=layers /app/extracted/dependencies/          ./
+COPY --from=layers /app/extracted/spring-boot-loader/     ./
+COPY --from=layers /app/extracted/snapshot-dependencies/  ./
+COPY --from=layers /app/extracted/application/            ./
+USER spring
+
+# JarLauncher = the Spring Boot 3.x layered-jar entry point; JAVA_TOOL_OPTIONS is honoured automatically.
+ENTRYPOINT ["java","org.springframework.boot.loader.launch.JarLauncher"]

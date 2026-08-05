@@ -38,6 +38,14 @@
              Spring Boot's dependency-management resolves flyway-core, flyway-database-postgresql,
              etc. against this property. -->
         <flyway.version>11.8.2</flyway.version>
+	    <testcontainers.version>1.21.4</testcontainers.version>
+
+    <sonar.host.url>http://localhost:9000</sonar.host.url>
+    <sonar.token>sqp_52a0411ec148915398274043636d6e4f771f1b28</sonar.token>
+    <!-- Optional, usually auto-derived from coordinates -->
+    <sonar.projectKey>vabagslite-local</sonar.projectKey>
+    <sonar.projectName>vabagslite-local</sonar.projectName>
+
     </properties>
 
     <dependencyManagement>
@@ -104,6 +112,15 @@
                 <artifactId>loki-logback-appender</artifactId>
                 <version>1.5.2</version>
             </dependency>
+            
+            <dependency>
+	            <groupId>org.testcontainers</groupId>
+	            <artifactId>testcontainers</artifactId>
+	            <version>${testcontainers.version}</version>
+ 	        <!--    <type>pom</type>
+	            <scope>import</scope>  -->
+        		</dependency>
+        
         </dependencies>
     </dependencyManagement>
 
@@ -112,6 +129,30 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ── Testcontainers (integration tests, *IT — run via -Pit) ─────────────
+             Versions come from the Spring Boot BOM's testcontainers-bom import.
+             Inherited by every Lite module; only the 3 backends actually ship *IT. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -183,6 +224,46 @@
             </plugins>
         </pluginManagement>
     </build>
+
+    <profiles>
+        <!-- Integration tests (Testcontainers). Opt-in — they need a Docker daemon.
+             Runs classes named *IT via failsafe in the integration-test/verify phases:
+                 mvn -pl lite-order-service,lite-inventory-service,lite-billing-service verify -Pit
+             argLine pins the JVM timezone: pgjdbc otherwise sends legacy "Asia/Calcutta"
+             as `SET TimeZone`, which postgres:18 rejects. -->
+        <profile>
+            <id>it</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <version>3.2.5</version>
+                        <configuration>
+                            <includes>
+                                <include>**/*IT.java</include>
+                            </includes>
+                            <argLine>-Duser.timezone=Asia/Kolkata</argLine>
+                            <!-- Spring Boot's `repackage` turns the module's main artifact into a
+                                 fat jar (app classes nested under BOOT-INF/classes). Without this,
+                                 failsafe puts that fat jar on the test classpath and can't find the
+                                 module's own types → NoClassDefFoundError. Point it at the exploded
+                                 classes dir instead. -->
+                            <classesDirectory>${project.build.outputDirectory}</classesDirectory>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
     <repositories>
         <!-- Eventuate releases and snapshots -->

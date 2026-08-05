@@ -1,0 +1,53 @@
+# Lite order service — saga orchestrator + write side (Postgres + Tram outbox).
+# Read side is the Postgres write model (Mongo dropped); auth is off; catalog stubbed;
+# fulfilment is a local saga stub. Default Spring profile (no `lite` profile needed here).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lite-order-service
+  namespace: vabags-lite
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: lite-order-service }
+  template:
+    metadata:
+      labels: { app: lite-order-service }
+    spec:
+      containers:
+        - name: lite-order-service
+          image: vabags/lite-order-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef: { name: vabags-lite-endpoints }
+            - secretRef: { name: vabags-lite-db }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8081 }
+            failureThreshold: 5
+            periodSeconds: 60
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8081 }
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8081 }
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lite-order-service
+  namespace: vabags-lite
+spec:
+  selector: { app: lite-order-service }     # ClusterIP (in-cluster only; gateway routes to it)
+  ports:
+    - port: 8081
+      targetPort: 8081

@@ -1,0 +1,51 @@
+# Lite inventory service — pure saga participant (Postgres + Kafka). No extra env beyond shared config.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lite-inventory-service
+  namespace: vabags-lite
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: lite-inventory-service }
+  template:
+    metadata:
+      labels: { app: lite-inventory-service }
+    spec:
+      containers:
+        - name: lite-inventory-service
+          image: vabags/lite-inventory-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+          envFrom:
+            - configMapRef: { name: vabags-lite-endpoints }
+            - secretRef: { name: vabags-lite-db }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8082 }
+            failureThreshold: 5
+            periodSeconds: 60
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8082 }
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8082 }
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lite-inventory-service
+  namespace: vabags-lite
+spec:
+  selector: { app: lite-inventory-service }
+  ports:
+    - port: 8082
+      targetPort: 8082

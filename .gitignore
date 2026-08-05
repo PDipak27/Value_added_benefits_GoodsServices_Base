@@ -39,3 +39,5 @@ Thumbs.db
 # ── Local env / secrets ───────────────────────────────
 .env
 *.local
+# nektos/act secret file (real tokens) — never commit; see .secrets.example
+.secrets

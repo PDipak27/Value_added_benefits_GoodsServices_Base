@@ -46,6 +46,7 @@ abstract class LiteE2EBase {
             int code = given().baseUri(ORDER).get("/actuator/health").statusCode();
             Assumptions.assumeTrue(code == 200,
                     "lite-order-service health != 200 — start docker-compose.lite.yml + the 4 services (gateway with -Dspring.profiles.active=lite) before -Pe2e");
+            //System.out.println("order-service health OK");
         } catch (Exception e) {
             Assumptions.abort("Lite stack not reachable at " + ORDER
                     + " — start infra + services + gateway. Cause: " + e.getMessage());

@@ -1,0 +1,98 @@
+# VA-BAGS Lite — LOCAL end-to-end pipeline, designed to run via nektos/act on your PC.
+#
+#   sonar → build+unit → integration tests (Testcontainers) → images →
+#   push to Docker Hub → infra up (docker-compose) → deploy 4 svcs to k3d → e2e
+#
+# IMPORTANT — run in act's SELF-HOSTED mode so every step executes on the host (not in an
+# act container). Only then do k3d, docker-compose, the host SonarQube (localhost:9000) and
+# Testcontainers all share one Docker daemon and reach each other over localhost:
+#
+#   act workflow_dispatch -W .github/workflows/local-ci.yml --secret-file .secrets
+#   (.actrc pins:  -P ubuntu-latest=-self-hosted  --bind)
+#
+# Prereqs on the host: JDK 17, Maven, Docker Desktop, k3d + kubectl, and the SonarQube
+# server already started (C:\SonarQube\26-7\bin\windows-x86-64\StartSonar.bat).
+# See Design/lite-local-ci.md.
+name: local-ci
+
+on:
+  workflow_dispatch:
+
+env:
+  SONAR_HOST_URL: http://localhost:9000
+  SONAR_PROJECT_KEY: vabagslite-local
+  K3D_CLUSTER: vabags
+  # Docker Hub namespace to push under (defaults to your username).
+  DOCKERHUB_NAMESPACE:  ${{ secrets.DOCKERHUB_USERNAME }}
+  LITE_MODULES: api-gateway lite-order-service lite-inventory-service lite-billing-service
+
+jobs:
+  local-pipeline:
+    runs-on: ubuntu-latest      # act maps this to the host via -P ubuntu-latest=-self-hosted
+    steps:
+      # 1) Build + unit + integration tests (Testcontainers) + SonarQube analysis.
+      #    -Pit runs the *IT via failsafe (needs Docker). sonar:sonar publishes to the
+      #    host SonarQube. The IT JVM tz is pinned by the `it` profile's argLine.
+#      - name: pwdir
+#         run: pwd
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build, integration tests (Testcontainers), SonarQube
+        run: |
+          mvn -B -ntp -Pit \
+            -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
+            verify org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar \
+            -Dsonar.host.url="$SONAR_HOST_URL" \
+            -Dsonar.token="$SONAR_TOKEN" \
+            -Dsonar.projectKey="$SONAR_PROJECT_KEY"
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # 2) Build the 4 images. Two tags each: vabags/<svc>:dev (for k3d) and
+      #    <namespace>/<svc>:latest (for Docker Hub).
+      - name: Build Lite images
+        run: |
+          for s in $LITE_MODULES; do
+            docker build -f Dockerfile.lite --build-arg MODULE="$s" \
+              -t "vabags/$s:dev" -t "$DOCKERHUB_NAMESPACE/$s:latest" .
+          done
+          docker images "vabags/*"
+
+      # 3) Push to Docker Hub.
+      - name: Push to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "$DOCKERHUB_NAMESPACE" --password-stdin
+          for s in $LITE_MODULES; do
+            docker push "$DOCKERHUB_NAMESPACE/$s:latest"
+          done
+
+      # 4) Bring up external infra (Postgres + Kafka + eventuate-cdc), wait for healthy.
+      - name: Start infra (docker-compose.lite.yml)
+        run: docker compose -f docker-compose.lite.yml up -d --wait
+
+      # 5) Ensure the k3d cluster, import the :dev images, deploy the 4 services in waves.
+      - name: Deploy 4 services to k3d
+        run: |
+          k3d cluster list "$K3D_CLUSTER" >/dev/null 2>&1 \
+            || k3d cluster create "$K3D_CLUSTER" -p "8089:8089@loadbalancer" --agents 0
+          for s in $LITE_MODULES; do k3d image import "vabags/$s:dev" -c "$K3D_CLUSTER"; done
+          kubectl apply -f k8s-lite/
+          kubectl -n vabags-lite rollout status deploy/lite-inventory-service deploy/lite-billing-service --timeout=360s
+          kubectl -n vabags-lite rollout status deploy/lite-order-service --timeout=360s
+          kubectl -n vabags-lite rollout status deploy/api-gateway --timeout=360s
+
+      # 6) Happy-path e2e against the k3d gateway. Port-forward the gateway (+ order for the
+      #    e2e health precheck), then drive place → COMPLETED.
+      - name: Happy-path e2e
+        run: |
+          kubectl -n vabags-lite port-forward svc/api-gateway 8089:8089 >/tmp/pf-gw.log 2>&1 &
+          kubectl -n vabags-lite port-forward svc/lite-order-service 8081:8081 >/tmp/pf-order.log 2>&1 &
+          sleep 8
+          mvn -B -ntp -pl lite-e2e-tests -Pe2e test \
+            -Dvab.gateway.url=http://localhost:8089 \
+            -Dvab.order.url=http://localhost:8081
+
+      # 7) Always tear down the port-forwards (cluster + infra left up for inspection).
+      - name: Cleanup port-forwards
+        if: always()
+        run: pkill -f "kubectl.*port-forward" || true

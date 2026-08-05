@@ -100,22 +100,8 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- ── Integration tests: real Postgres via Testcontainers ─────── -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-testcontainers</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>postgresql</artifactId>
-            <scope>test</scope>
-        </dependency>
+        <!-- Testcontainers (postgres + kafka + junit-jupiter) are inherited from the
+             Lite parent pom as test-scope deps; *IT run under -Pit. -->
     </dependencies>
 
     <build>
