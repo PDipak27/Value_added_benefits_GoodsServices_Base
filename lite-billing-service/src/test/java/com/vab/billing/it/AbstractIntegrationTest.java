@@ -22,16 +22,16 @@ public abstract class AbstractIntegrationTest {
             new PostgreSQLContainer<>(DockerImageName.parse("postgres:18"))
                     .withDatabaseName("vab")
                     .withUsername("eventuate")
-                    .withPassword("eventuate")
+                    .withPassword("eventuate").withReuse(true)
                     .withCopyFileToContainer(
                             MountableFile.forHostPath("../deploy/postgres-init/01-eventuate-schema.sql"),
                             "/docker-entrypoint-initdb.d/01-eventuate-schema.sql")
                     .withCopyFileToContainer(
                             MountableFile.forHostPath("../deploy/postgres-init/04-tram-saga-schema.sql"),
                             "/docker-entrypoint-initdb.d/04-tram-saga-schema.sql");
-	@Container
+	
     static final KafkaContainer KAFKA =
-            new KafkaContainer(DockerImageName.parse("apache/kafka:3.7.1"));
+            new KafkaContainer(DockerImageName.parse("apache/kafka:3.7.1")).withReuse(true);
 
     static {
         POSTGRES.start();

@@ -1,5 +1,6 @@
 package com.vab.order.it;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.kafka.KafkaContainer;
@@ -26,7 +27,7 @@ public abstract class AbstractIntegrationTest {
             new PostgreSQLContainer<>(DockerImageName.parse("postgres:18"))
                     .withDatabaseName("vab")
                     .withUsername("eventuate")
-                    .withPassword("eventuate")
+                    .withPassword("eventuate").withReuse(true)
                     .withCopyFileToContainer(
                             MountableFile.forHostPath("../deploy/postgres-init/01-eventuate-schema.sql"),
                             "/docker-entrypoint-initdb.d/01-eventuate-schema.sql")
@@ -35,9 +36,10 @@ public abstract class AbstractIntegrationTest {
                             "/docker-entrypoint-initdb.d/04-tram-saga-schema.sql");
 
     static final KafkaContainer KAFKA =
-            new KafkaContainer(DockerImageName.parse("apache/kafka:3.7.1"));
+            new KafkaContainer(DockerImageName.parse("apache/kafka:3.7.1")).withReuse(true);
 
-    static {
+    @BeforeAll
+    public static void beforeAll() {
         POSTGRES.start();
         KAFKA.start();
     }

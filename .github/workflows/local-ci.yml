@@ -19,25 +19,32 @@ on:
   workflow_dispatch:
 
 env:
+  # Absolute repo path — REQUIRED for act self-hosted mode, whose steps otherwise run in a
+  # scratch dir (~/.cache/act/<id>/hostexecutor), not your checkout. Every run step cd's here
+  # via defaults.run.working-directory below. Override with:  act ... --env REPO_DIR=/your/path
+  REPO_DIR: D:/Dev/E_Learn/courses/DVA-C02/Projects/VA-BAGS/source/vabags_base
   SONAR_HOST_URL: http://localhost:9000
   SONAR_PROJECT_KEY: vabagslite-local
   K3D_CLUSTER: vabags
   # Docker Hub namespace to push under (defaults to your username).
   DOCKERHUB_NAMESPACE:  ${{ secrets.DOCKERHUB_USERNAME }}
   LITE_MODULES: api-gateway lite-order-service lite-inventory-service lite-billing-service
-
+  RUN_IT_TESTS: 'true' # Set to 'true' to re-enable
 jobs:
   local-pipeline:
     runs-on: ubuntu-latest      # act maps this to the host via -P ubuntu-latest=-self-hosted
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ env.REPO_DIR }}   # run every step in the real repo (self-hosted has no checkout)
     steps:
       # 1) Build + unit + integration tests (Testcontainers) + SonarQube analysis.
       #    -Pit runs the *IT via failsafe (needs Docker). sonar:sonar publishes to the
       #    host SonarQube. The IT JVM tz is pinned by the `it` profile's argLine.
-#      - name: pwdir
-#         run: pwd
-      - name: Checkout
-        uses: actions/checkout@v4
+#      - name: Checkout
+#        uses: actions/checkout@v4
       - name: Build, integration tests (Testcontainers), SonarQube
+        if: env.RUN_IT_TESTS == 'true'
         run: |
           mvn -B -ntp -Pit \
             -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
@@ -51,6 +58,7 @@ jobs:
       # 2) Build the 4 images. Two tags each: vabags/<svc>:dev (for k3d) and
       #    <namespace>/<svc>:latest (for Docker Hub).
       - name: Build Lite images
+        if: env.RUN_IT_TESTS == 'true'
         run: |
           for s in $LITE_MODULES; do
             docker build -f Dockerfile.lite --build-arg MODULE="$s" \
@@ -60,6 +68,7 @@ jobs:
 
       # 3) Push to Docker Hub.
       - name: Push to Docker Hub
+        if: env.RUN_IT_TESTS == 'true'
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "$DOCKERHUB_NAMESPACE" --password-stdin
           for s in $LITE_MODULES; do
@@ -74,7 +83,8 @@ jobs:
       - name: Deploy 4 services to k3d
         run: |
           k3d cluster list "$K3D_CLUSTER" >/dev/null 2>&1 \
-            || k3d cluster create "$K3D_CLUSTER" -p "8089:8089@loadbalancer" --agents 0
+          || k3d cluster create "$K3D_CLUSTER" -p "8089:8089@loadbalancer" --agents 0
+          docker exec k3d-vabags-server-0 crictl images | grep  "dev"
           for s in $LITE_MODULES; do k3d image import "vabags/$s:dev" -c "$K3D_CLUSTER"; done
           kubectl apply -f k8s-lite/
           kubectl -n vabags-lite rollout status deploy/lite-inventory-service deploy/lite-billing-service --timeout=360s
