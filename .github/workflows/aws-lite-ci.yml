@@ -32,7 +32,7 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
   LITE_MODULES: api-gateway lite-order-service lite-inventory-service lite-billing-service
   K8S_NAMESPACE: vabags-lite
-
+  MY_SECRET: ${{ secrets.YOUR_SECRET_NAME }}
 jobs:
   aws-deploy:
     runs-on: ubuntu-latest
@@ -47,6 +47,11 @@ jobs:
 
       # Exchange the job's OIDC token for temporary AWS creds (valid ~1h). All later
       # aws/docker/kubectl steps inherit them.
+      - name: Check Secret Length
+        run: |
+          SECRET_LENGTH=${#MY_SECRET}
+          echo "The length of the secret is: $SECRET_LENGTH"
+    
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
