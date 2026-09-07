@@ -1,0 +1,115 @@
+# VA-BAGS Lite — AWS pipeline: build → push images to Amazon ECR → deploy to EKS → e2e.
+#
+# The cloud-deploy counterpart to lite-ci.yml (which stops at Docker Hub). Kept separate
+# because this one COSTS MONEY and needs an EKS cluster — so it is manual (workflow_dispatch).
+# Full internals (what eksctl builds, OIDC, autoscaling, cost) are in Design/lite-aws-eks-guide.md.
+#
+# Prereqs (one-time, see the guide §1–2):
+#   • GitHub OIDC provider + IAM role (ECR push + eks:DescribeCluster) → secret AWS_ROLE_ARN
+#   • The role mapped into the cluster's RBAC (eksctl create iamidentitymapping)
+#   • An EKS cluster (eksctl create cluster ... --managed --spot)
+#   • Repo vars: AWS_REGION, EKS_CLUSTER_NAME
+name: aws-lite-ci
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy the pushed images to EKS (uncheck to only build+push to ECR)"
+        type: boolean
+        default: true
+      run_e2e:
+        description: "Run the happy-path e2e against the EKS gateway after deploy"
+        type: boolean
+        default: true
+
+# Required for the GitHub→AWS OIDC assume-role (no long-lived keys stored).
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+  LITE_MODULES: api-gateway lite-order-service lite-inventory-service lite-billing-service
+  K8S_NAMESPACE: vabags-lite
+
+jobs:
+  aws-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      # Exchange the job's OIDC token for temporary AWS creds (valid ~1h). All later
+      # aws/docker/kubectl steps inherit them.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Build the jars the images need (Testcontainers *IT already run in lite-ci → skip here).
+      - name: Build jars
+        run: |
+          mvn -B -ntp -DskipTests \
+            -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
+            package
+
+      # ECR auth → docker login for the account registry.
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build each image and push :<sha> + :latest. Create the repo on first run.
+      - name: Build + push images to ECR
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}   # <acct>.dkr.ecr.<region>.amazonaws.com
+        run: |
+          SHA="${GITHUB_SHA::7}"
+          for s in $LITE_MODULES; do
+            aws ecr describe-repositories --repository-names "vabags/$s" >/dev/null 2>&1 \
+              || aws ecr create-repository --repository-name "vabags/$s" >/dev/null
+            docker build -f Dockerfile.lite --build-arg MODULE="$s" \
+              -t "$REGISTRY/vabags/$s:$SHA" -t "$REGISTRY/vabags/$s:latest" .
+            docker push "$REGISTRY/vabags/$s:$SHA"
+            docker push "$REGISTRY/vabags/$s:latest"
+          done
+
+      # Point kubectl at EKS (writes a kubeconfig that auths via `aws eks get-token`),
+      # apply the manifests, then roll each Deployment to the freshly pushed ECR :<sha>.
+      - name: Deploy to EKS
+        if: inputs.deploy
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "$AWS_REGION"
+          SHA="${GITHUB_SHA::7}"
+          kubectl apply -f k8s-lite/
+          for s in $LITE_MODULES; do
+            kubectl -n "$K8S_NAMESPACE" set image "deploy/$s" "$s=$REGISTRY/vabags/$s:$SHA"
+          done
+          # Wait for the participants, then the orchestrator, then the gateway.
+          kubectl -n "$K8S_NAMESPACE" rollout status deploy/lite-inventory-service deploy/lite-billing-service --timeout=360s
+          kubectl -n "$K8S_NAMESPACE" rollout status deploy/lite-order-service --timeout=360s
+          kubectl -n "$K8S_NAMESPACE" rollout status deploy/api-gateway --timeout=360s
+
+      # Happy-path e2e. Port-forward is used (works regardless of Service type / LB DNS lag):
+      # the runner tunnels to the in-cluster Services via the EKS API.
+      - name: Happy-path e2e (against the EKS gateway)
+        if: inputs.deploy && inputs.run_e2e
+        run: |
+          kubectl -n "$K8S_NAMESPACE" port-forward svc/api-gateway 8089:8089 >/tmp/pf-gw.log 2>&1 &
+          kubectl -n "$K8S_NAMESPACE" port-forward svc/lite-order-service 8081:8081 >/tmp/pf-order.log 2>&1 &
+          sleep 8
+          mvn -B -ntp -pl lite-e2e-tests -Pe2e test \
+            -Dvab.gateway.url=http://localhost:8089 \
+            -Dvab.order.url=http://localhost:8081
+
+      - name: Cleanup port-forwards
+        if: always()
+        run: pkill -f "kubectl.*port-forward" || true

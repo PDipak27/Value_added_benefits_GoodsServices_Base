@@ -8,8 +8,7 @@
 #   • Sonar can't reach your laptop's localhost:9000 — point it at SonarCloud or a hosted
 #     SonarQube via the SONAR_HOST_URL var + SONAR_TOKEN secret.
 #   • No k3d here. The active registry is Docker Hub (same as local). The AWS path — push to
-#     ECR + deploy to EKS + e2e — is spelled out in the commented block at the bottom; enable
-#     it once the AWS side (below) exists.
+#     ECR + deploy to EKS + e2e — is documented in Design/lite-aws-eks-guide.md.
 #
 # Everything that needs credentials is GATED behind repo vars/secrets, so the workflow stays
 # green on PRs and forks that have none.
@@ -22,11 +21,15 @@ on:
     branches: [cicdLite, main]
   workflow_dispatch:
 
+# OIDC token permission is needed by the AWS path (assume-role); harmless otherwise.
+permissions:
+  id-token: write
+  contents: read
 env:
   LITE_MODULES: api-gateway lite-order-service lite-inventory-service lite-billing-service
   DOCKERHUB_NAMESPACE: ${{ secrets.DOCKERHUB_USERNAME }}
   SONAR_PROJECT_KEY: vabags-lite
-
+  imagesExists: true
 jobs:
   pipeline:
     runs-on: ubuntu-latest
@@ -82,68 +85,10 @@ jobs:
           done
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AWS PATH (ECR + EKS) — kept as reference; uncomment to push to ECR and deploy to EKS.
-#
-# ── One-time AWS setup (do these on the AWS side first) ──────────────────────
-#  1. ECR repos (or let the workflow create them):
-#       for s in api-gateway lite-order-service lite-inventory-service lite-billing-service; do
-#         aws ecr create-repository --repository-name vabags/$s --region ap-south-1; done
-#  2. EKS cluster (cheapest for study — spot nodes, no NAT; tear down nightly):
-#       eksctl create cluster --name vabags-lite --region ap-south-1 \
-#         --nodes 2 --node-type t3.large --managed --spot
-#       (installs the AWS Load Balancer Controller separately if you want ALB Ingress.)
-#  3. GitHub OIDC role (no long-lived keys): an IAM role that trusts
-#       token.actions.githubusercontent.com (sub = repo:PDipak27/<repo>:ref:refs/heads/cicdLite)
-#       with ECR push + eks:DescribeCluster (+ the EKS RBAC mapping via `eksctl create iamidentitymapping`).
-#     Store its ARN as secret AWS_ROLE_ARN; set var AWS_REGION and var EKS_CLUSTER_NAME.
-#  4. Budget guardrails: CloudWatch billing alarm at $10/$18, no NAT gateway (public subnets),
-#     `eksctl delete cluster --name vabags-lite` when done (control plane is $0.10/h even idle).
-#
-# ── Add these permissions to the job (OIDC) ─────────────────────────────────
-#     permissions:
-#       id-token: write
-#       contents: read
-#
-# ── Steps: build+push to ECR (replaces/adds to the Docker Hub push above) ────
-#      - name: Configure AWS credentials (OIDC)
-#        uses: aws-actions/configure-aws-credentials@v4
-#        with:
-#          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-#          aws-region: ${{ vars.AWS_REGION }}
-#      - name: Login to Amazon ECR
-#        id: ecr
-#        uses: aws-actions/amazon-ecr-login@v2
-#      - name: Build + push images to ECR
-#        env:
-#          REGISTRY: ${{ steps.ecr.outputs.registry }}   # <acct>.dkr.ecr.<region>.amazonaws.com
-#        run: |
-#          SHA="${GITHUB_SHA::7}"
-#          for s in $LITE_MODULES; do
-#            aws ecr describe-repositories --repository-names "vabags/$s" >/dev/null 2>&1 \
-#              || aws ecr create-repository --repository-name "vabags/$s" >/dev/null
-#            docker build -f Dockerfile.lite --build-arg MODULE="$s" \
-#              -t "$REGISTRY/vabags/$s:$SHA" -t "$REGISTRY/vabags/$s:latest" .
-#            docker push "$REGISTRY/vabags/$s:$SHA"
-#            docker push "$REGISTRY/vabags/$s:latest"
-#          done
-#
-# ── Steps: deploy to EKS + happy-path e2e (the cloud equivalent of local-ci's k3d + e2e) ──
-#      - name: Deploy to EKS
-#        env:
-#          REGISTRY: ${{ vars.ECR_REGISTRY }}   # <acct>.dkr.ecr.<region>.amazonaws.com
-#        run: |
-#          aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ vars.AWS_REGION }}"
-#          SHA="${GITHUB_SHA::7}"
-#          kubectl apply -f k8s-lite/
-#          # Repoint the manifests' :dev images at the pushed ECR tag for this SHA:
-#          kubectl -n vabags-lite set image deploy/api-gateway            api-gateway="$REGISTRY/vabags/api-gateway:$SHA"
-#          kubectl -n vabags-lite set image deploy/lite-order-service     lite-order-service="$REGISTRY/vabags/lite-order-service:$SHA"
-#          kubectl -n vabags-lite set image deploy/lite-inventory-service lite-inventory-service="$REGISTRY/vabags/lite-inventory-service:$SHA"
-#          kubectl -n vabags-lite set image deploy/lite-billing-service   lite-billing-service="$REGISTRY/vabags/lite-billing-service:$SHA"
-#          kubectl -n vabags-lite rollout status deploy/api-gateway --timeout=360s
-#      - name: Happy-path e2e (against the EKS gateway)
-#        run: |
-#          # If the gateway Service is a LoadBalancer, resolve its ALB/NLB hostname; else port-forward.
-#          GW=$(kubectl -n vabags-lite get svc api-gateway -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-#          mvn -B -ntp -pl lite-e2e-tests -Pe2e test -Dvab.gateway.url="http://$GW:8089" -Dvab.order.url="http://$GW:8081"
+# AWS PATH (ECR push + EKS deploy + happy-path e2e) — the cloud equivalent of local-ci's
+# k3d + e2e — is documented with runnable commands and the full CloudFormation / VPC / IAM /
+# autoscaling internals in:  Design/lite-aws-eks-guide.md
+# The runnable AWS pipeline is a separate workflow: .github/workflows/aws-lite-ci.yml
+# (manual / workflow_dispatch). It needs secret AWS_ROLE_ARN and repo vars AWS_REGION,
+# EKS_CLUSTER_NAME. See the guide for the full CloudFormation / VPC / IAM / autoscaling story.
 # ─────────────────────────────────────────────────────────────────────────────
