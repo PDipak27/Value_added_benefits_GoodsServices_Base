@@ -32,7 +32,7 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
   LITE_MODULES: api-gateway lite-order-service lite-inventory-service lite-billing-service
   K8S_NAMESPACE: vabags-lite
-  MY_SECRET: ${{ secrets.YOUR_SECRET_NAME }}
+  MY_SECRET: ${{ secrets.AWS_ROLE_ARN }}
 jobs:
   aws-deploy:
     runs-on: ubuntu-latest
