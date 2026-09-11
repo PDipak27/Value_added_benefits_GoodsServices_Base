@@ -49,6 +49,11 @@ jobs:
       # aws/docker/kubectl steps inherit them.
       - name: Check Secret Length
         run: |
+          if [ -z "${{ secrets.MY_SECRET }}" ]; then
+          echo "Secret is EMPTY"
+          else
+          echo "Secret is POPULATED"
+          fi
           SECRET_LENGTH=${#MY_SECRET}
           echo "The length of the secret is: $SECRET_LENGTH"
     
