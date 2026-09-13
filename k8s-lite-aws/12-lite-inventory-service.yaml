@@ -1,0 +1,54 @@
+# Lite inventory service (saga participant). Image rewritten to ECR by kustomize.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lite-inventory-service
+  namespace: vabags-lite
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: lite-inventory-service }
+  template:
+    metadata:
+      labels: { app: lite-inventory-service }
+    spec:
+      initContainers:
+        - name: wait-infra
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432 && nc -z kafka 9092; do echo 'waiting for postgres+kafka'; sleep 3; done"]
+      containers:
+        - name: lite-inventory-service
+          image: vabags/lite-inventory-service
+          ports:
+            - containerPort: 8082
+          envFrom:
+            - configMapRef: { name: vabags-lite-endpoints }
+            - secretRef: { name: vabags-lite-db }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8082 }
+            failureThreshold: 5
+            periodSeconds: 60
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8082 }
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8082 }
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lite-inventory-service
+  namespace: vabags-lite
+spec:
+  selector: { app: lite-inventory-service }
+  ports:
+    - port: 8082
+      targetPort: 8082

@@ -1,0 +1,37 @@
+# Namespace + shared config for the AWS/EKS Lite deploy.
+# Unlike k8s-lite/ (which points at host.k3d.internal on your laptop), everything here runs
+# IN-CLUSTER: Postgres, Kafka and eventuate-cdc are pods, reached by their Service DNS.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vabags-lite
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vabags-lite-endpoints
+  namespace: vabags-lite
+data:
+  # ── in-cluster infra (Service DNS, not host.k3d.internal) ─────────────
+  SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/vab
+  EVENTUATELOCAL_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  # ── DB connection budget ──────────────────────────────────────────────
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "3"
+  SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "1"
+  # ── runtime knobs ─────────────────────────────────────────────────────
+  APP_LOG_DIR: /tmp
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
+  # IST timezone — -Duser.timezone avoids the JVM defaulting to "Asia/Calcutta",
+  # which postgres:18 rejects on `SET TimeZone`. This env overrides the image ENV.
+  TZ: Asia/Kolkata
+  JAVA_TOOL_OPTIONS: "-Duser.timezone=Asia/Kolkata -Xmx224m -XX:MaxMetaspaceSize=176m -XX:+UseSerialGC -XX:TieredStopAtLevel=1"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vabags-lite-db
+  namespace: vabags-lite
+type: Opaque
+stringData:
+  SPRING_DATASOURCE_USERNAME: eventuate
+  SPRING_DATASOURCE_PASSWORD: eventuate

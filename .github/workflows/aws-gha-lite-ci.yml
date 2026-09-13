@@ -99,15 +99,22 @@ jobs:
         run: |
           aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "$AWS_REGION"
           SHA="${GITHUB_SHA::7}"
-          kubectl apply -f k8s-lite/
-          for s in $LITE_MODULES; do
-            kubectl -n "$K8S_NAMESPACE" set image "deploy/$s" "$s=$REGISTRY/vabags/$s:$SHA"
-          done
+          
+          #kubectl apply -f k8s-lite/
+          #for s in $LITE_MODULES; do
+           # kubectl -n "$K8S_NAMESPACE" set image "deploy/$s" "$s=$REGISTRY/vabags/$s:$SHA"
+          #done
+                    
+          ( cd k8s-lite-aws
+            for s in $LITE_MODULES; do kustomize edit set image "vabags/$s=$REGISTRY/vabags/$s:$SHA"; done )
+          kubectl kustomize --load-restrictor=LoadRestrictionsNone k8s-lite-aws | kubectl apply -f -
+          
           # Wait for the participants, then the orchestrator, then the gateway.
+          kubectl -n "$K8S_NAMESPACE" rollout status deploy/postgres deploy/kafka deploy/zookeeper deploy/eventuate-cdc --timeout=360s
           kubectl -n "$K8S_NAMESPACE" rollout status deploy/lite-inventory-service deploy/lite-billing-service --timeout=360s
           kubectl -n "$K8S_NAMESPACE" rollout status deploy/lite-order-service --timeout=360s
           kubectl -n "$K8S_NAMESPACE" rollout status deploy/api-gateway --timeout=360s
-
+          
       # Happy-path e2e. Port-forward is used (works regardless of Service type / LB DNS lag):
       # the runner tunnels to the in-cluster Services via the EKS API.
       - name: Happy-path e2e (against the EKS gateway)

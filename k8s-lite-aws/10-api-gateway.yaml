@@ -1,0 +1,56 @@
+# Edge gateway (LITE profile: auth off, plain HTTP, single order route). Image name is bare
+# `vabags/api-gateway`; kustomize rewrites it to the ECR registry + SHA tag at deploy time.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: vabags-lite
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: api-gateway }
+  template:
+    metadata:
+      labels: { app: api-gateway }
+    spec:
+      containers:
+        - name: api-gateway
+          image: vabags/api-gateway
+          ports:
+            - containerPort: 8089
+          envFrom:
+            - configMapRef: { name: vabags-lite-endpoints }
+            - secretRef: { name: vabags-lite-db }
+          env:
+            - { name: SPRING_PROFILES_ACTIVE, value: "lite" }
+            - { name: GATEWAY_SSL_ENABLED, value: "false" }
+            - { name: ORDER_SERVICE_URI, value: "http://lite-order-service:8081" }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8089 }
+            failureThreshold: 5
+            periodSeconds: 60
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8089 }
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8089 }
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: vabags-lite
+spec:
+  type: LoadBalancer          # EKS provisions an NLB in the public subnets
+  selector: { app: api-gateway }
+  ports:
+    - port: 8089
+      targetPort: 8089
