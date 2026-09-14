@@ -1,0 +1,120 @@
+// VA-BAGS Lite — AWS CD pipeline (Jenkins declarative). Mirrors .github/workflows/aws-gha-lite-ci.yml:
+//   build jars -> push images to ECR -> deploy k8s-lite-aws to EKS (kustomize) -> happy-path e2e
+//
+// Auth: uses a stored AWS credential (Jenkins is not a GitHub-style OIDC provider). In production
+// prefer an EC2 instance role (Jenkins on EC2) or IRSA (Jenkins in EKS) so no keys are stored —
+// see Design/lite-jenkins-guide.md. Agent needs: JDK17+Maven, docker, aws CLI, kubectl, kustomize.
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    timeout(time: 60, unit: 'MINUTES')
+  }
+
+  tools {
+    jdk   'jdk17'
+    maven 'maven3'
+  }
+
+  parameters {
+    booleanParam(name: 'DEPLOY',  defaultValue: true, description: 'Deploy to EKS after pushing to ECR')
+    booleanParam(name: 'RUN_E2E', defaultValue: true, description: 'Run the happy-path e2e after deploy')
+    string(name: 'AWS_REGION',       defaultValue: 'ap-south-1', description: 'AWS region')
+    string(name: 'EKS_CLUSTER_NAME', defaultValue: 'vabags-lite', description: 'EKS cluster name')
+  }
+
+  environment {
+    LITE_MODULES  = 'api-gateway lite-order-service lite-inventory-service lite-billing-service'
+    K8S_NAMESPACE = 'vabags-lite'
+  }
+
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    // Testcontainers ITs already run in the CI pipeline -> skip here, just produce the jars.
+    stage('Build jars') {
+      steps {
+        sh '''
+          mvn -B -ntp -DskipTests \
+            -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
+            package
+        '''
+      }
+    }
+
+    stage('Build + push images to ECR') {
+      steps {
+        // AmazonWebServicesCredentialsBinding (Pipeline: AWS Steps plugin) exports
+        // AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for every aws/docker call in the block.
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+          sh '''
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+            aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+            SHA=$(git rev-parse --short HEAD)
+            for s in $LITE_MODULES; do
+              aws ecr describe-repositories --repository-names "vabags/$s" --region "$AWS_REGION" >/dev/null 2>&1 \
+                || aws ecr create-repository --repository-name "vabags/$s" --region "$AWS_REGION" >/dev/null
+              docker build -f Dockerfile.lite --build-arg MODULE="$s" \
+                -t "$REGISTRY/vabags/$s:$SHA" -t "$REGISTRY/vabags/$s:latest" .
+              docker push "$REGISTRY/vabags/$s:$SHA"
+              docker push "$REGISTRY/vabags/$s:latest"
+            done
+          '''
+        }
+      }
+    }
+
+    stage('Deploy to EKS') {
+      when { expression { return params.DEPLOY } }
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+          sh '''
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+            aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+            SHA=$(git rev-parse --short HEAD)
+            # Inject the ECR registry + SHA into the kustomize image list (workspace copy).
+            ( cd k8s-lite-aws
+              for s in $LITE_MODULES; do kustomize edit set image "vabags/$s=$REGISTRY/vabags/$s:$SHA"; done )
+            # Build (allowing the ../deploy init-SQL reference) and apply.
+            kubectl kustomize --load-restrictor=LoadRestrictionsNone k8s-lite-aws | kubectl apply -f -
+            # Infra first, then services.
+            kubectl -n "$K8S_NAMESPACE" rollout status deploy/postgres deploy/kafka deploy/zookeeper deploy/eventuate-cdc --timeout=360s
+            kubectl -n "$K8S_NAMESPACE" rollout status deploy/lite-inventory-service deploy/lite-billing-service --timeout=360s
+            kubectl -n "$K8S_NAMESPACE" rollout status deploy/lite-order-service --timeout=360s
+            kubectl -n "$K8S_NAMESPACE" rollout status deploy/api-gateway --timeout=360s
+          '''
+        }
+      }
+    }
+
+    stage('Happy-path e2e') {
+      when { expression { return params.DEPLOY && params.RUN_E2E } }
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+          sh '''
+            aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+            kubectl -n "$K8S_NAMESPACE" port-forward svc/api-gateway 8089:8089 >pf-gw.log 2>&1 &
+            kubectl -n "$K8S_NAMESPACE" port-forward svc/lite-order-service 8081:8081 >pf-order.log 2>&1 &
+            sleep 8
+            mvn -B -ntp -pl lite-e2e-tests -Pe2e test \
+              -Dvab.gateway.url=http://localhost:8089 \
+              -Dvab.order.url=http://localhost:8081
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      sh 'pkill -f "kubectl.*port-forward" || true; docker logout || true'
+      cleanWs()
+    }
+  }
+}

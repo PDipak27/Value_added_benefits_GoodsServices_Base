@@ -1,0 +1,101 @@
+// VA-BAGS Lite — CI pipeline (Jenkins declarative). Mirrors .github/workflows/lite-ci.yml:
+//   build + unit + integration tests (Testcontainers) -> SonarQube -> build 4 images -> push Docker Hub
+//
+// Agent requirements: JDK 17 + Maven (via Jenkins Global Tools), plus docker CLI with access to a
+// Docker daemon (Testcontainers + image builds). Steps use `sh`, so the agent must be Linux (or
+// WSL / a Docker-based agent) — not a Windows shell. See Design/lite-jenkins-guide.md.
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    timeout(time: 45, unit: 'MINUTES')
+  }
+
+  // Names must match Jenkins > Manage Jenkins > Tools.
+  tools {
+    jdk   'jdk17'
+    maven 'maven3'
+  }
+
+  parameters {
+    booleanParam(name: 'RUN_SONAR',   defaultValue: true,  description: 'Run SonarQube analysis (needs a configured server)')
+    booleanParam(name: 'PUSH_IMAGES', defaultValue: true,  description: 'Build + push the 4 images to Docker Hub')
+  }
+
+  environment {
+    LITE_MODULES      = 'api-gateway lite-order-service lite-inventory-service lite-billing-service'
+    SONAR_PROJECT_KEY = 'vabags-lite'
+    // Username/password credential: exposes DOCKERHUB_USR (also the image namespace) + DOCKERHUB_PSW.
+    DOCKERHUB         = credentials('dockerhub-creds')
+  }
+
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    // Testcontainers spins real Postgres + Kafka; the `it` profile pins the IST timezone on the
+    // failsafe JVM (postgres:18 rejects the legacy Asia/Calcutta id).
+    stage('Build + integration tests') {
+      steps {
+        sh '''
+          mvn -B -ntp -Pit \
+            -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
+            verify
+        '''
+      }
+      post {
+        always {
+          junit testResults: '**/target/surefire-reports/*.xml, **/target/failsafe-reports/*.xml',
+                allowEmptyResults: true
+        }
+      }
+    }
+
+    // withSonarQubeEnv injects SONAR_HOST_URL + auth token from the named server config, so
+    // `mvn sonar:sonar` needs no inline URL/token. Reuses the compiled target/ from the stage above.
+    stage('SonarQube') {
+      when { expression { return params.RUN_SONAR } }
+      steps {
+        withSonarQubeEnv('sonarqube') {
+          sh 'mvn -B -ntp sonar:sonar -Dsonar.projectKey=$SONAR_PROJECT_KEY'
+        }
+      }
+    }
+
+    stage('Build images') {
+      steps {
+        sh '''
+          SHA=$(git rev-parse --short HEAD)
+          for s in $LITE_MODULES; do
+            docker build -f Dockerfile.lite --build-arg MODULE="$s" \
+              -t "$DOCKERHUB_USR/$s:$SHA" -t "$DOCKERHUB_USR/$s:latest" .
+          done
+        '''
+      }
+    }
+
+    stage('Push Docker Hub') {
+      when { expression { return params.PUSH_IMAGES } }
+      steps {
+        sh '''
+          echo "$DOCKERHUB_PSW" | docker login -u "$DOCKERHUB_USR" --password-stdin
+          SHA=$(git rev-parse --short HEAD)
+          for s in $LITE_MODULES; do
+            docker push "$DOCKERHUB_USR/$s:$SHA"
+            docker push "$DOCKERHUB_USR/$s:latest"
+          done
+        '''
+      }
+    }
+  }
+
+  post {
+    always {
+      sh 'docker logout || true'
+      cleanWs()
+    }
+  }
+}
