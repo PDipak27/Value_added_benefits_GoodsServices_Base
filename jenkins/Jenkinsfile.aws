@@ -1,16 +1,18 @@
 // VA-BAGS Lite — AWS CD pipeline (Jenkins declarative). Mirrors .github/workflows/aws-gha-lite-ci.yml:
 //   build jars -> push images to ECR -> deploy k8s-lite-aws to EKS (kustomize) -> happy-path e2e
 //
-// Auth: uses a stored AWS credential (Jenkins is not a GitHub-style OIDC provider). In production
-// prefer an EC2 instance role (Jenkins on EC2) or IRSA (Jenkins in EKS) so no keys are stored —
-// see Design/lite-jenkins-guide.md. Agent needs: JDK17+Maven, docker, aws CLI, kubectl, kustomize.
+// Auth: relies on the EC2 agent's INSTANCE PROFILE role (discovered via IMDS) — no stored keys.
+// The role needs ECR push + eks:DescribeCluster, and must be mapped into the cluster RBAC
+// (eksctl create iamidentitymapping --arn <role> --group system:masters). If you instead run on a
+// non-AWS agent, wrap each sh in withCredentials([[$class:'AmazonWebServicesCredentialsBinding',...]]).
+// See Design/lite-jenkins-guide.md. Agent needs: JDK17+Maven, docker, aws CLI, kubectl, kustomize.
 pipeline {
   agent any
 
   options {
     timestamps()
     disableConcurrentBuilds()
-    timeout(time: 60, unit: 'MINUTES')
+    timeout(time: 15, unit: 'MINUTES')
   }
 
   tools {
@@ -32,7 +34,9 @@ pipeline {
 
   stages {
     stage('Checkout') {
-      steps { checkout scm }
+      //invoke build manually, specify git repo
+      steps { git branch: 'cicdLite', url: 'https://github.com/PDipak27/Value_added_benefits_GoodsServices_Base.git' }
+	   //steps { checkout scm } // checks out the exact version, commit, or branch from the SCM that triggered this specific build run.
     }
 
     // Testcontainers ITs already run in the CI pipeline -> skip here, just produce the jars.
@@ -48,65 +52,58 @@ pipeline {
 
     stage('Build + push images to ECR') {
       steps {
-        // AmazonWebServicesCredentialsBinding (Pipeline: AWS Steps plugin) exports
-        // AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for every aws/docker call in the block.
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
-          sh '''
-            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-            REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
-            aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-            SHA=$(git rev-parse --short HEAD)
-            for s in $LITE_MODULES; do
-              aws ecr describe-repositories --repository-names "vabags/$s" --region "$AWS_REGION" >/dev/null 2>&1 \
-                || aws ecr create-repository --repository-name "vabags/$s" --region "$AWS_REGION" >/dev/null
-              docker build -f Dockerfile.lite --build-arg MODULE="$s" \
-                -t "$REGISTRY/vabags/$s:$SHA" -t "$REGISTRY/vabags/$s:latest" .
-              docker push "$REGISTRY/vabags/$s:$SHA"
-              docker push "$REGISTRY/vabags/$s:latest"
-            done
-          '''
-        }
+        // Credentials come from the EC2 instance-profile role (IMDS) — no withCredentials needed.
+        sh '''
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+          SHA=$(git rev-parse --short HEAD)
+          for s in $LITE_MODULES; do
+            aws ecr describe-repositories --repository-names "vabags/$s" --region "$AWS_REGION" >/dev/null 2>&1 \
+              || aws ecr create-repository --repository-name "vabags/$s" --region "$AWS_REGION" >/dev/null
+            docker build -f Dockerfile.lite --build-arg MODULE="$s" \
+              -t "$REGISTRY/vabags/$s:$SHA" -t "$REGISTRY/vabags/$s:latest" .
+            docker push "$REGISTRY/vabags/$s:$SHA"
+            docker push "$REGISTRY/vabags/$s:latest"
+          done
+        '''
       }
     }
 
     stage('Deploy to EKS') {
       when { expression { return params.DEPLOY } }
       steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
-          sh '''
-            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-            REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
-            aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
-            SHA=$(git rev-parse --short HEAD)
-            # Inject the ECR registry + SHA into the kustomize image list (workspace copy).
-            ( cd k8s-lite-aws
-              for s in $LITE_MODULES; do kustomize edit set image "vabags/$s=$REGISTRY/vabags/$s:$SHA"; done )
-            # Build (allowing the ../deploy init-SQL reference) and apply.
-            kubectl kustomize --load-restrictor=LoadRestrictionsNone k8s-lite-aws | kubectl apply -f -
-            # Infra first, then services.
-            kubectl -n "$K8S_NAMESPACE" rollout status deploy/postgres deploy/kafka deploy/zookeeper deploy/eventuate-cdc --timeout=360s
-            kubectl -n "$K8S_NAMESPACE" rollout status deploy/lite-inventory-service deploy/lite-billing-service --timeout=360s
-            kubectl -n "$K8S_NAMESPACE" rollout status deploy/lite-order-service --timeout=360s
-            kubectl -n "$K8S_NAMESPACE" rollout status deploy/api-gateway --timeout=360s
-          '''
-        }
+        sh '''
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          SHA=$(git rev-parse --short HEAD)
+          # Inject the ECR registry + SHA into the kustomize image list (workspace copy).
+          ( cd k8s-lite-aws
+            for s in $LITE_MODULES; do kustomize edit set image "vabags/$s=$REGISTRY/vabags/$s:$SHA"; done )
+          # Build (allowing the ../deploy init-SQL reference) and apply.
+          kubectl kustomize --load-restrictor=LoadRestrictionsNone k8s-lite-aws | kubectl apply -f -
+          # Infra first, then services.
+          kubectl -n "$K8S_NAMESPACE" rollout status deploy/postgres deploy/kafka deploy/zookeeper deploy/eventuate-cdc --timeout=360s
+          kubectl -n "$K8S_NAMESPACE" rollout status deploy/lite-inventory-service deploy/lite-billing-service --timeout=360s
+          kubectl -n "$K8S_NAMESPACE" rollout status deploy/lite-order-service --timeout=360s
+          kubectl -n "$K8S_NAMESPACE" rollout status deploy/api-gateway --timeout=360s
+        '''
       }
     }
 
     stage('Happy-path e2e') {
       when { expression { return params.DEPLOY && params.RUN_E2E } }
       steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
-          sh '''
-            aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
-            kubectl -n "$K8S_NAMESPACE" port-forward svc/api-gateway 8089:8089 >pf-gw.log 2>&1 &
-            kubectl -n "$K8S_NAMESPACE" port-forward svc/lite-order-service 8081:8081 >pf-order.log 2>&1 &
-            sleep 8
-            mvn -B -ntp -pl lite-e2e-tests -Pe2e test \
-              -Dvab.gateway.url=http://localhost:8089 \
-              -Dvab.order.url=http://localhost:8081
-          '''
-        }
+        sh '''
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          kubectl -n "$K8S_NAMESPACE" port-forward svc/api-gateway 8089:8089 >pf-gw.log 2>&1 &
+          kubectl -n "$K8S_NAMESPACE" port-forward svc/lite-order-service 8081:8081 >pf-order.log 2>&1 &
+          sleep 8
+          mvn -B -ntp -pl lite-e2e-tests -Pe2e test \
+            -Dvab.gateway.url=http://localhost:8089 \
+            -Dvab.order.url=http://localhost:8081
+        '''
       }
     }
   }

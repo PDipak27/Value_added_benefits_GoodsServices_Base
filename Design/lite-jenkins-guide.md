@@ -128,16 +128,47 @@ iamidentitymapping --arn <role> --group system:masters`) — getting a kubeconfi
 
 ---
 
-## 7. Windows / local note
+## 7. Windows: run the build on a WSL2 Linux agent (required)
 
-The pipelines use `sh` (bash) with loops and pipes. If your Jenkins controller/agent is Windows, `sh`
-won't work in cmd/PowerShell. Options, cleanest first:
-- Run the build on a **Linux agent** (a Docker/Kubernetes cloud agent, or a WSL-based node).
-- Point Jenkins' shell to **Git Bash** (Manage Jenkins → System → Shell executable →
-  `C:\Program Files\Git\bin\bash.exe`).
-- (Not recommended) port each `sh` block to `bat`/`pwsh` — verbose and error-prone.
+The pipelines use `sh` (bash) with loops and pipes. On the **Windows built-in node** the `sh` step
+does not work reliably — pointing it at Git Bash still fails with
+`sh: line 1: C:\Program Files\Git\bin\bash.exe: command not found` (the durable-task launcher +
+spaces in the path). Don't fight it: run the build on a **WSL2 Ubuntu agent**, where `sh`, Docker and
+Testcontainers all work natively. No pipeline changes beyond pinning the agent label.
 
-Enterprise Jenkins almost always uses Linux agents, which is what these pipelines assume.
+**Step 1 — prep WSL2 Ubuntu** (Docker Desktop → Settings → Resources → **WSL integration** → enable
+for the distro, so `docker` works inside WSL):
+```bash
+sudo apt update && sudo apt install -y openjdk-17-jdk git curl
+docker version   # must succeed inside WSL (proves Docker Desktop integration)
+```
+
+**Step 2 — create the Jenkins node**: Manage Jenkins → **Nodes → New Node**
+- Name `wsl-linux`, type *Permanent Agent*
+- Remote root dir: `/home/<you>/jenkins-agent`
+- **Labels: `linux`**  (the pipelines pin to this)
+- Launch method: **Launch agent by connecting it to the controller** (inbound/JNLP — no sshd needed)
+- Save, open the node page, copy the shown `java -jar agent.jar …` command (it has the URL + secret).
+
+**Step 3 — start the agent inside WSL2**:
+```bash
+mkdir -p ~/jenkins-agent && cd ~/jenkins-agent
+# paste the command from the node page, e.g.:
+curl -sO http://<jenkins-host>:8080/jnlpJars/agent.jar
+java -jar agent.jar -url http://<jenkins-host>:8080/ -secret <SECRET> -name wsl-linux -workDir ~/jenkins-agent
+```
+> Reaching the Windows-hosted Jenkins from WSL2: on Windows 11 with mirrored networking `localhost`
+> works; otherwise use the Windows host IP. The node page prints the exact URL.
+
+**Step 4 — pin the pipelines to the Linux agent**: change `agent any` → `agent { label 'linux' }` in
+`jenkins/Jenkinsfile.ci` and `jenkins/Jenkinsfile.aws` (or set the Built-In Node's executors to 0 so
+`agent any` can only land on `wsl-linux`).
+
+**Step 5 — tools must be OS-portable**: in Manage Jenkins → Tools, `jdk17` and `maven3` must use
+**Install automatically** (Temurin / Apache Maven installers), *not* a hard `C:\…` path — otherwise
+they won't resolve on the Linux agent. Jenkins provisions them onto the WSL node on first build.
+
+Enterprise Jenkins almost always uses Linux agents, which is exactly this setup.
 
 ---
 

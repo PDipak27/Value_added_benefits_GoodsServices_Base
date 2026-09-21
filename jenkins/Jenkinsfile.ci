@@ -3,14 +3,15 @@
 //
 // Agent requirements: JDK 17 + Maven (via Jenkins Global Tools), plus docker CLI with access to a
 // Docker daemon (Testcontainers + image builds). Steps use `sh`, so the agent must be Linux (or
-// WSL / a Docker-based agent) — not a Windows shell. See Design/lite-jenkins-guide.md.
+// WSL / a Docker-based agent) — not a Windows shell. See Design/lite-jenkins-guide.md
 pipeline {
   agent any
+  //agent { label 'linux' }
 
   options {
     timestamps()
     disableConcurrentBuilds()
-    timeout(time: 45, unit: 'MINUTES')
+    timeout(time: 15, unit: 'MINUTES')
   }
 
   // Names must match Jenkins > Manage Jenkins > Tools.
@@ -33,18 +34,20 @@ pipeline {
 
   stages {
     stage('Checkout') {
-      steps { checkout scm }
+	//invoke build manually, specify git repo
+      steps { git branch: 'cicdLite', url: 'https://github.com/PDipak27/Value_added_benefits_GoodsServices_Base.git' }
+	   //steps { checkout scm } // checks out the exact version, commit, or branch from the SCM that triggered this specific build run.
     }
 
     // Testcontainers spins real Postgres + Kafka; the `it` profile pins the IST timezone on the
     // failsafe JVM (postgres:18 rejects the legacy Asia/Calcutta id).
     stage('Build + integration tests') {
       steps {
-        sh '''
-          mvn -B -ntp -Pit \
-            -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
-            verify
-        '''
+					sh '''
+					  mvn -B -ntp -Pit \
+						-pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
+						verify
+					'''
       }
       post {
         always {
