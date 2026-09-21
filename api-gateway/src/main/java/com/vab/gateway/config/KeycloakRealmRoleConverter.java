@@ -17,7 +17,6 @@ import java.util.Map;
 public final class KeycloakRealmRoleConverter implements Converter<Jwt, Collection<GrantedAuthority>> {
 
     @Override
-    @SuppressWarnings("unchecked")
     public Collection<GrantedAuthority> convert(Jwt jwt) {
         Collection<GrantedAuthority> authorities = new ArrayList<>();
         Object realmAccess = jwt.getClaim("realm_access");

@@ -17,6 +17,7 @@ import org.testcontainers.utility.MountableFile;
 @Testcontainers
 public abstract class AbstractIntegrationTest {
 
+	@SuppressWarnings("resource")
 	@Container
     static final PostgreSQLContainer<?> POSTGRES =
             new PostgreSQLContainer<>(DockerImageName.parse("postgres:18"))
@@ -30,7 +31,8 @@ public abstract class AbstractIntegrationTest {
                             MountableFile.forHostPath("../deploy/postgres-init/04-tram-saga-schema.sql"),
                             "/docker-entrypoint-initdb.d/04-tram-saga-schema.sql");
 	
-    static final KafkaContainer KAFKA =
+    @SuppressWarnings("resource")
+	static final KafkaContainer KAFKA =
             new KafkaContainer(DockerImageName.parse("apache/kafka:3.7.1")).withReuse(true);
 
     static {

@@ -223,6 +223,45 @@
                 </plugin>
             </plugins>
         </pluginManagement>
+
+        <plugins>
+            <!-- JaCoCo: attach the coverage agent to the test JVMs, and emit
+                 target/site/jacoco/jacoco.xml at `verify` for SonarQube to consume.
+                 Surefire (unit) and failsafe (IT, via @{argLine}) both append to
+                 target/jacoco.exec, so the report is unit + integration coverage. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.12</version>
+                <executions>
+                    <execution>
+                        <id>jacoco-prepare-agent</id>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-report</id>
+                        <phase>verify</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Surefire runs the unit tests (*Test) and picks up JaCoCo's argLine
+                 automatically. Exclude the abstract Testcontainers base (its name matches
+                 *Test, but its static init would spin up Docker during the unit phase) and
+                 any *IT (failsafe owns those under -Pit). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <excludes>
+                        <exclude>**/Abstract*.java</exclude>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
     </build>
 
     <profiles>
@@ -243,7 +282,7 @@
                             <includes>
                                 <include>**/*IT.java</include>
                             </includes>
-                            <argLine>-Duser.timezone=Asia/Kolkata</argLine>
+                            <argLine>@{argLine} -Duser.timezone=Asia/Kolkata</argLine>
                             <!-- Spring Boot's `repackage` turns the module's main artifact into a
                                  fat jar (app classes nested under BOOT-INF/classes). Without this,
                                  failsafe puts that fat jar on the test classpath and can't find the

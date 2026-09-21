@@ -77,6 +77,7 @@ public class InventoryCommandHandlers {
         // OTel span actually active on this handler thread? (Blank traceId in logs = no active span.)
         Message raw = cm.getMessage();
         SpanContext sc = Span.current().getSpanContext();
+        if(raw!=null && sc!=null)
         log.info("TRACE-DIAG reserveInventory | headers={} | otelSpanValid={} otelTraceId={} otelSpanId={} | ctx={}",
                 raw.getHeaders(), sc.isValid(), sc.getTraceId(), sc.getSpanId(), Context.current());
 

@@ -1,10 +1,9 @@
 package com.vab.order.it;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.vab.order.command.domain.OrderRepository;
-import com.vab.order.command.domain.OrderStatus;
+import static org.assertj.core.api.Assertions.assertThat;
 
-import org.junit.jupiter.api.Disabled;
+import java.util.UUID;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -15,9 +14,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 
-import java.util.UUID;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vab.order.command.domain.OrderRepository;
+import com.vab.order.command.domain.OrderStatus;
 
 /**
  * Integration test: place an order through the real web + JPA + Tram-outbox stack
