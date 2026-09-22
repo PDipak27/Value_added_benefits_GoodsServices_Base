@@ -1,32 +1,33 @@
 package com.vab.order.command.service;
 
+import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import com.vab.events.order.OrderCancelled;
 import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
 import com.vab.events.order.OrderConfirmed;
-import com.vab.events.order.OrderEntitlementRevoked;
 import com.vab.events.order.OrderFailed;
 import com.vab.events.order.OrderFulfilmentFailed;
 import com.vab.events.order.OrderPlaced;
 import com.vab.order.command.catalog.CatalogClient;
 import com.vab.order.command.domain.Order;
 import com.vab.order.command.domain.OrderRepository;
-import com.vab.order.command.domain.OrderStatus;
 import com.vab.order.command.domain.PlaceOrderCommand;
 import com.vab.order.idempotency.IdempotencyKey;
 import com.vab.order.idempotency.IdempotencyKeyRepository;
 import com.vab.order.saga.PlaceOrderSaga;
 import com.vab.order.saga.PlaceOrderSagaData;
+
 import io.eventuate.tram.events.publisher.DomainEventPublisher;
 import io.eventuate.tram.sagas.orchestration.SagaInstanceFactory;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import java.time.Instant;
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
 
 /**
  * Write side of the Order aggregate (post-DD-14).
@@ -286,94 +287,8 @@ public class OrderCommandService {
                         order.getFailedStep(), reason)));
     }
 
-    /**
-     * Applies a successful re-drive reply (DD-27): completes the parked order with the
-     * provisioned {@code externalRef}. Idempotent — a reply for an order that is no
-     * longer parked (already completed by an earlier delivery) is a logged no-op.
-     */
-    @Transactional
-    public void completeFromReDrive(String orderId, String externalRef,
-                                    Instant validFrom, Instant validUntil) {
-        Order order = orderRepo.findById(orderId)
-                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
-        if (order.getStatus() != OrderStatus.FULFILMENT_FAILED) {
-            log.info("Re-drive success ignored: orderId={} is {}, not parked", orderId, order.getStatus());
-            return;
-        }
-        order.complete(Instant.now(), null, null, externalRef, validFrom, validUntil);
-        orderRepo.saveAndFlush(order);   // bumps @Version
-        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
-                new OrderCompleted(order.getCompletedAt(), order.getVersion(),
-                        order.getProductType(), null, null, externalRef, validFrom, validUntil)));
-    }
-
-    /**
-     * Applies a successful revoke reply: marks the order's entitlement revoked and
-     * publishes {@code OrderEntitlementRevoked} (the projector flips the read model to
-     * REVOKED, freeing the uniqueness slot). Idempotent.
-     */
-    @Transactional
-    public void applyEntitlementRevoked(String orderId) {
-        Order order = orderRepo.findById(orderId)
-                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
-        if (order.isEntitlementRevoked()) {
-            log.info("Entitlement revoke already applied: orderId={}", orderId);
-            return;
-        }
-        order.revokeEntitlement(Instant.now());
-        orderRepo.saveAndFlush(order);   // bumps @Version
-        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
-                new OrderEntitlementRevoked(order.getEntitlementRevokedAt(), order.getVersion())));
-    }
-
     private static boolean isBenefitType(String productType) {
         return "DIGITAL_SUBSCRIPTION".equals(productType) || "SOFTWARE_LICENSE".equals(productType);
     }
 
-    /**
-     * Applies a failed re-drive reply (DD-27): the order stays parked. Re-stamps the
-     * attempt and re-publishes {@code OrderFulfilmentFailed} so the admin is alerted
-     * again. Idempotent — ignored if the order is no longer parked.
-     */
-    @Transactional
-    public void parkFromReDrive(String orderId, String reason) {
-        Order order = orderRepo.findById(orderId)
-                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
-        if (order.getStatus() != OrderStatus.FULFILMENT_FAILED) {
-            log.info("Re-drive failure ignored: orderId={} is {}, not parked", orderId, order.getStatus());
-            return;
-        }
-        order.fulfilmentFailed(reason);
-        orderRepo.saveAndFlush(order);   // bumps @Version
-        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
-                new OrderFulfilmentFailed(order.getLastAttemptAt(), order.getVersion(),
-                        order.getFailedStep(), reason)));
-    }
-
-    /**
-     * Admin manual override (DD-27): the entitlement was provisioned out-of-band;
-     * complete the parked order with the supplied {@code externalRef} without
-     * re-calling OTT.
-     *
-     * @throws IllegalStateException (→ 409) if the order is not currently parked
-     */
-    @Transactional
-    public void completeFulfilment(String orderId, String externalRef) {
-        log.info("Manual fulfilment override: orderId={}, externalRef={}", orderId, externalRef);
-        Order order = orderRepo.findById(orderId)
-                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
-        requireParked(order);
-        order.complete(Instant.now(), null, null, externalRef);
-        orderRepo.saveAndFlush(order);   // bumps @Version
-        domainEventPublisher.publish(Order.AGGREGATE_TYPE, orderId, List.of(
-                new OrderCompleted(order.getCompletedAt(), order.getVersion(),
-                        order.getProductType(), null, null, externalRef)));
-    }
-
-    private void requireParked(Order order) {
-        if (order.getStatus() != OrderStatus.FULFILMENT_FAILED) {
-            throw new IllegalStateException(
-                    "Order " + order.getId() + " is " + order.getStatus() + ", not FULFILMENT_FAILED");
-        }
-    }
 }

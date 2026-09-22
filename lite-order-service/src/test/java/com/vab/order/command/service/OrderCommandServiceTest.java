@@ -5,6 +5,7 @@ import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
 import com.vab.events.order.OrderConfirmed;
 import com.vab.events.order.OrderFailed;
+import com.vab.events.order.OrderFulfilmentFailed;
 import com.vab.events.order.OrderPlaced;
 import com.vab.order.command.catalog.CatalogClient;
 import com.vab.order.command.domain.Order;
@@ -226,6 +227,21 @@ class OrderCommandServiceTest {
             service.failOrder("ord-1", "RESERVE_INVENTORY", "OUT_OF_STOCK");
 
             assertThat(publishedEvents().get(0)).isInstanceOf(OrderFailed.class);
+        }
+
+        @Test
+        void fulfilmentFailed_parks_order_and_publishes_fulfilment_failed() {
+            // DD-27 park: saga finalize on OrderProvisioningFailed — the charge stands,
+            // the order goes to the non-terminal FULFILMENT_FAILED state, and an alert
+            // event is published. The order is NOT terminal afterwards.
+            Order order = placed();
+            when(orderRepo.findById("ord-1")).thenReturn(Optional.of(order));
+
+            service.fulfilmentFailed("ord-1", "OTT_TIMEOUT");
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.FULFILMENT_FAILED);
+            verify(orderRepo).saveAndFlush(order);
+            assertThat(publishedEvents().get(0)).isInstanceOf(OrderFulfilmentFailed.class);
         }
 
         @Test

@@ -18,7 +18,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Pageable;
 
 import com.vab.events.common.ProductType;
@@ -39,8 +38,6 @@ import com.vab.inventory.domain.Reservation;
 import com.vab.inventory.domain.ReservationRepository;
 
 import io.eventuate.tram.commands.consumer.CommandMessage;
-import io.eventuate.tram.commands.producer.CommandMessageFactory;
-import io.eventuate.tram.commands.producer.CommandProducer;
 import io.eventuate.tram.messaging.common.Message;
 
 /**
@@ -56,8 +53,7 @@ class InventoryCommandHandlersTest {
     @Mock LicenseKeyRepository licenseKeys;
 
     private InventoryCommandHandlers handlers;
-    @Autowired
-    private CommandProducer commandProducer;
+    
     
     @BeforeEach
     void setUp() {
