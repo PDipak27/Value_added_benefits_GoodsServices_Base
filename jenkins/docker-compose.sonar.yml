@@ -1,0 +1,62 @@
+# VA-BAGS Lite — on-demand SonarQube (Community) for the Jenkins EC2 build server.
+#
+# Runs the SonarQube server + its own Postgres on the SAME host as Jenkins, so:
+#   - the scanner (mvn sonar:sonar on the Jenkins agent) reaches it at  http://localhost:9000
+#   - the quality-gate webhook reaches Jenkins at  http://host.docker.internal:8080/sonarqube-webhook/
+# No security-group changes are needed (all traffic is host-local).
+#
+# "On-demand": bring it up only while doing CI work, stop it when idle:
+#     docker compose -f jenkins/docker-compose.sonar.yml up -d      # start
+#     docker compose -f jenkins/docker-compose.sonar.yml stop       # pause (keeps data)
+#     docker compose -f jenkins/docker-compose.sonar.yml down       # remove (volumes kept)
+#
+# Named volumes persist projects, issue history and the quality-gate "new code" baseline
+# across restarts (that history is why we chose a host-persistent container over ephemeral).
+#
+# HOST PREREQ (once): SonarQube embeds Elasticsearch, which needs a raised mmap limit:
+#     sudo sysctl -w vm.max_map_count=262144
+#     echo 'vm.max_map_count=262144' | sudo tee /etc/sysctl.d/99-sonarqube.conf
+# On a 4GB t3.medium also add ~2GB swap (see Design/lite-jenkins-guide.md §9).
+
+services:
+  sonarqube-db:
+    image: postgres:15
+    container_name: sonarqube-db
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: sonar
+      POSTGRES_DB: sonar
+    volumes:
+      - sonarqube_db:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: sonarqube
+    depends_on:
+      - sonarqube-db
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonarqube-db:5432/sonar
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: sonar
+    ports:
+      - "9000:9000"
+    # Lets the SonarQube container reach the host (where Jenkins listens on :8080) by name,
+    # for the quality-gate webhook. On Linux this maps to the docker bridge gateway.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    restart: unless-stopped
+
+volumes:
+  sonarqube_db:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:

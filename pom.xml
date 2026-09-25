@@ -40,12 +40,6 @@
         <flyway.version>11.8.2</flyway.version>
 	    <testcontainers.version>1.21.4</testcontainers.version>
 
-    <sonar.host.url>http://localhost:9000</sonar.host.url>
-    <sonar.token>sqp_52a0411ec148915398274043636d6e4f771f1b28</sonar.token>
-    <!-- Optional, usually auto-derived from coordinates -->
-    <sonar.projectKey>vabagslite-local</sonar.projectKey>
-    <sonar.projectName>vabagslite-local</sonar.projectName>
-
     </properties>
 
     <dependencyManagement>

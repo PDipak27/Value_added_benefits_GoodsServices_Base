@@ -7,6 +7,7 @@ overlay (`k8s-lite-aws/`) and e2e. Two declarative pipelines mirror the two GHA 
 |---|---|---|
 | CI: build + IT + Sonar + Docker Hub | `.github/workflows/lite-ci.yml` | `jenkins/Jenkinsfile.ci` |
 | CD: ECR + EKS deploy + e2e | `.github/workflows/aws-gha-lite-ci.yml` | `jenkins/Jenkinsfile.aws` |
+| **Combined CI+CD** (build+IT → Sonar+gate → ECR → approval → EKS → e2e) | — | **`jenkins/Jenkinsfile.cicd`** (see §9) |
 | Local (act) | `.github/workflows/local-ci.yml` | run either Jenkinsfile on a local agent |
 
 Nothing about the app, images, or k8s manifests changes — only the *orchestrator*.
@@ -174,9 +175,101 @@ Enterprise Jenkins almost always uses Linux agents, which is exactly this setup.
 
 ## 8. Optional hardening (interview talking points)
 - **Quality gate**: after `sonar:sonar`, add a `waitForQualityGate()` stage (needs a SonarQube webhook
-  back to Jenkins) to fail the build on gate breach.
+  back to Jenkins) to fail the build on gate breach. **Implemented in §9 (`Jenkinsfile.cicd`).**
 - **Shared Library**: factor the image build/push loop into a `vars/buildAndPush.groovy` step to DRY
   across services/pipelines.
 - **Agents as pods**: the Kubernetes plugin can run each build in an ephemeral pod (closest to GHA's
   ephemeral runners) — a `podTemplate` with `maven`, `docker`/kaniko, `awscli` containers.
 - **Approvals**: wrap the EKS deploy in an `input` step for a manual gate before touching the cluster.
+  **Implemented in §9 (`Jenkinsfile.cicd`).**
+
+---
+
+## 9. Combined CI+CD pipeline (`Jenkinsfile.cicd`) + SonarQube quality gate
+
+`jenkins/Jenkinsfile.cicd` is a single end-to-end pipeline. It does **not** replace `Jenkinsfile.ci`
+/ `Jenkinsfile.aws` (kept as-is) — use it when you want one fail-fast run:
+
+```
+Checkout
+ -> Build + Unit + IT (mvn -Pit verify)        # JaCoCo unit+IT -> target/site/jacoco/jacoco.xml
+ -> SonarQube analysis (scanner on the agent)
+ -> Quality Gate (waitForQualityGate)           # FAILS THE BUILD before anything ships
+ -> Build 4 images (Dockerfile.lite)
+ -> Push to ECR                                 # EC2 instance-profile role (IMDS) — no stored keys
+ -> input: "Deploy to EKS?"                     # manual approval gate
+ -> Deploy to EKS (kustomize)
+ -> Happy-path e2e
+```
+
+Registry is **ECR-only** (no Docker Hub). AWS auth is the **instance-profile role** (§5) — the same
+role must be mapped into EKS RBAC. Params: `RUN_SONAR`, `RUN_E2E`, `AWS_REGION`, `EKS_CLUSTER_NAME`.
+
+### 9.1 Sonar Scanner vs SonarQube (two different things)
+- **Scanner** = the client; it *is* the `mvn sonar:sonar` goal, run on the Jenkins agent. Nothing to
+  install separately. It collects code + the JaCoCo XML and uploads a report.
+- **SonarQube server** = the backend (web UI + Elasticsearch + Postgres) that computes issues,
+  coverage and the quality gate. Here it's an **on-demand Community container on the Jenkins host**.
+
+### 9.2 Authentication (all token-based; nothing shared in the Jenkinsfile)
+| Hop | Mechanism |
+|---|---|
+| Scanner → SonarQube | A **user token** (SonarQube: My Account → Security → Generate Token), passed as `sonar.token`. |
+| Jenkins → SonarQube | The **SonarQube Scanner** plugin stores URL + that token as a Jenkins credential; `withSonarQubeEnv('sonarqube')` injects `SONAR_HOST_URL` + `SONAR_AUTH_TOKEN`. The pipeline passes them via `-D` to **override the token hardcoded in `pom.xml`**. |
+| SonarQube → Jenkins | The **quality-gate webhook** POSTs to `…/sonarqube-webhook/`; this is what wakes `waitForQualityGate`. |
+| Agent ↔ AWS | Unrelated to Sonar — the EC2 instance-profile role. |
+
+> **Security note:** `pom.xml` currently hardcodes `sonar.token` (committed to git) for local dev.
+> Rotate it and move it to `~/.m2/settings.xml` or a `-D` param. The pipeline already overrides it
+> with the Jenkins-managed token, so CI is unaffected, but the committed value should not stay.
+
+### 9.3 SonarQube Community vs paid
+Community Edition is **free** (self-hosted here). Paid editions add branch/PR analysis + more
+languages — not needed for Java. SonarCloud (SaaS) is free only for **public** repos.
+
+### 9.4 On-demand SonarQube on the Jenkins EC2
+Defined in `jenkins/docker-compose.sonar.yml` (SonarQube `lts-community` + its own Postgres, named
+volumes so **history/quality-gate baseline persist**). Because it runs on the Jenkins host, the
+scanner reaches it at `http://localhost:9000` and the webhook reaches Jenkins at
+`http://host.docker.internal:8080/sonarqube-webhook/` — **no security-group changes**.
+
+**Host prereqs (once):**
+```bash
+# Elasticsearch (embedded in SonarQube) needs a raised mmap limit or it crash-loops:
+sudo sysctl -w vm.max_map_count=262144
+echo 'vm.max_map_count=262144' | sudo tee /etc/sysctl.d/99-sonarqube.conf
+# 4GB t3.medium is tight (Jenkins + SonarQube/ES + Postgres) — add ~2GB swap as a safety net:
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+Stages are sequential, so the Testcontainers Postgres+Kafka are torn down before Sonar runs — peaks
+don't stack. Still, keep t3.medium as the floor.
+
+**Lifecycle:**
+```bash
+docker compose -f jenkins/docker-compose.sonar.yml up -d     # start before a CI run
+docker compose -f jenkins/docker-compose.sonar.yml stop      # pause when idle (keeps data)
+```
+
+### 9.5 One-time wiring
+1. Start the stack (above); open `http://localhost:9000`, log in `admin`/`admin`, set a new password.
+2. Create project **`vabags-lite`** (matches `SONAR_PROJECT_KEY`). Generate a token.
+3. Jenkins → Manage Jenkins → System → **SonarQube servers** → add one named **`sonarqube`**,
+   URL `http://localhost:9000`, and the token as a **Secret text** credential.
+4. SonarQube → Administration → Configuration → **Webhooks** → add
+   `http://host.docker.internal:8080/sonarqube-webhook/` (adjust host/port if Jenkins runs elsewhere).
+5. Confirm/define the **quality gate** (the built-in "Sonar way" is a fine start).
+6. New Item → Pipeline → *Pipeline script from SCM* → this repo, branch `cicdLite`,
+   **Script Path `jenkins/Jenkinsfile.cicd`**.
+
+### 9.6 How the quality gate blocks the build (short)
+`mvn sonar:sonar` uploads the report and **returns immediately** (analysis is async on the server).
+`waitForQualityGate abortPipeline: true` then **pauses** the build; SonarQube finishes computing the
+gate and **POSTs the webhook** to Jenkins, which resumes the build and fails it if the gate ≠ OK.
+Without the webhook the step would hang until timeout.
+
+### 9.7 Coverage
+JaCoCo is already wired in the parent `pom.xml`: surefire (unit) + failsafe (IT, via `@{argLine}`)
+append to one `target/jacoco.exec`, and `jacoco:report` emits `target/site/jacoco/jacoco.xml` at
+`verify`. The recent sonar-maven-plugin **auto-detects** that path — combined unit+IT coverage shows
+on the SonarQube dashboard and can be a gate condition. The XML is also archived on the build.
