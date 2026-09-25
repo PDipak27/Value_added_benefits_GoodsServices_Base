@@ -1,0 +1,55 @@
+// VA-BAGS FULL edition — cluster lifecycle job (create / delete) + nightly teardown.
+//
+// ACTION=create → infra/eks/create-cluster.sh (eksctl ClusterConfig, gp3 SC, ECR repos)
+// ACTION=delete → infra/eks/delete-cluster.sh (namespace first so EBS volumes + NLBs are freed)
+// The cron trigger runs a DELETE every night at ~23:00 IST: an idle EKS control plane alone is
+// $0.10/h, so nothing should survive the day by accident.
+//
+// Permissions: creating a cluster needs broad rights (IAM roles, VPC/EC2, CloudFormation, EKS).
+// Either give the Jenkins instance role those (demo account only), or run create-cluster.sh from
+// your admin laptop and let this job do only the nightly delete (same rights minus IAM create).
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    timeout(time: 60, unit: 'MINUTES')
+  }
+
+  triggers {
+    cron('TZ=Asia/Kolkata\nH 23 * * *')
+  }
+
+  parameters {
+    choice(name: 'ACTION', choices: ['delete', 'create'], description: 'Cron runs use the first choice (delete)')
+    string(name: 'AWS_REGION',       defaultValue: 'ap-south-1',  description: 'AWS region')
+    string(name: 'EKS_CLUSTER_NAME', defaultValue: 'vabags-full', description: 'EKS cluster name')
+    string(name: 'JENKINS_ROLE_ARN', defaultValue: '',            description: 'Role to grant cluster access (create only; empty = creator only)')
+  }
+
+  stages {
+    stage('Checkout') { steps { checkout scm } }
+
+    stage('Create cluster') {
+      when { expression { params.ACTION == 'create' } }
+      steps {
+        sh '''
+          AWS_REGION="$AWS_REGION" CLUSTER_NAME="$EKS_CLUSTER_NAME" JENKINS_ROLE_ARN="$JENKINS_ROLE_ARN" \
+            bash infra/eks/create-cluster.sh
+        '''
+      }
+    }
+
+    stage('Delete cluster') {
+      when { expression { params.ACTION == 'delete' } }
+      steps {
+        sh '''
+          AWS_REGION="$AWS_REGION" CLUSTER_NAME="$EKS_CLUSTER_NAME" bash infra/eks/delete-cluster.sh
+        '''
+      }
+    }
+  }
+
+  post { always { cleanWs() } }
+}

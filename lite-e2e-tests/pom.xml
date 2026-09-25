@@ -21,7 +21,7 @@
       then polls GET /v1/orders/{id} until COMPLETED.
 
       Not run by a normal `mvn test` (class ends in *E2E). Run explicitly:
-          mvn -pl lite-e2e-tests -Pe2e test
+          mvn -Dlite -pl lite-e2e-tests -Pe2e test
       Override the gateway base URL with -Dvab.gateway.url=... when not on localhost.
     -->
 

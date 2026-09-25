@@ -16,7 +16,7 @@ Approach confirmed: **3 new copied modules** (`lite-order-service`,
 
 | Step | Action |
 |---|---|
-| Preserve full build | `git mv pom.xml pom.xml.bkp` (still buildable via `mvn -f pom.xml.bkp`) |
+| Preserve full build | `git mv pom.xml pom.xml.bkp` (historical — since replaced by one root pom with `full`/`lite` profiles; lite = `-Dlite`) |
 | New parent | Copy `pom.xml.bkp` → `pom.xml`; **keep GAV** `com.vab:va-bags:0.1.0-SNAPSHOT` (change `<name>` only), swap `<modules>` |
 | Lite `<modules>` | `shared-events`, `shared-observability`, `api-gateway`, `lite-order-service`, `lite-inventory-service`, `lite-billing-service`, `lite-e2e-tests` |
 | New module dirs | Copy `order-service`→`lite-order-service`, `inventory-service`→`lite-inventory-service`, `billing-service`→`lite-billing-service`; set each `<artifactId>` to `lite-*`; parent stays `com.vab:va-bags` |
@@ -153,7 +153,7 @@ New small module (or trimmed copy of `e2e-tests`).
 - [ ] api-gateway: add `lite` profile (permitAll, lite routes, no redis).
 - [ ] Author `docker-compose.lite.yml` (Postgres + Kafka-KRaft + cdc).
 - [ ] Add `lite-e2e-tests` happy-path.
-- [ ] Build: `mvn -pl <lite modules> -am package`; run e2e against gateway with `-Dspring.profiles.active=lite`.
+- [ ] Build: `mvn -Dlite -pl <lite modules> -am package`; run e2e against gateway with `-Dspring.profiles.active=lite`.
 
 ---
 

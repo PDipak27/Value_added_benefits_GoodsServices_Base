@@ -43,7 +43,7 @@ for inspection; port-forwards are killed on exit.
 
 ## Run just the integration tests (no act)
 ```bash
-mvn -Pit -pl lite-order-service,lite-inventory-service,lite-billing-service verify
+mvn -Dlite -Pit -pl lite-order-service,lite-inventory-service,lite-billing-service verify
 ```
 - `OrderPlacementIT` — POST /v1/orders → 202, order row PLACED, GET returns it (web + JPA + Tram outbox on real PG + Kafka).
 - `InventorySeedIT` / `BillingSeedIT` — participants boot on real PG + Kafka; Flyway seed present.

@@ -1,7 +1,7 @@
 # One image for every VA-BAGS *Lite* service (mirrors ./Dockerfile, + IST timezone).
 #
 # Build the jars ON THE HOST first (the build container has no ~/.m2 / repo access):
-#   mvn -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am -DskipTests package
+#   mvn -Dlite -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am -DskipTests package
 # Then build an image per Lite service:
 #   docker build -f Dockerfile.lite --build-arg MODULE=lite-order-service -t vabags/lite-order-service:dev .
 #   (api-gateway is shared with the full build; image name kept as api-gateway)

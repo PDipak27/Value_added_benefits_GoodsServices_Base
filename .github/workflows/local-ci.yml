@@ -46,7 +46,7 @@ jobs:
       - name: Build, integration tests (Testcontainers), SonarQube
         if: env.RUN_IT_TESTS == 'true'
         run: |
-          mvn -B -ntp -Pit \
+          mvn -B -ntp -Dlite -Pit \
             -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
             verify org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar \
             -Dsonar.host.url="$SONAR_HOST_URL" \
@@ -98,7 +98,7 @@ jobs:
           kubectl -n vabags-lite port-forward svc/api-gateway 8089:8089 >/tmp/pf-gw.log 2>&1 &
           kubectl -n vabags-lite port-forward svc/lite-order-service 8081:8081 >/tmp/pf-order.log 2>&1 &
           sleep 8
-          mvn -B -ntp -pl lite-e2e-tests -Pe2e test \
+          mvn -B -ntp -Dlite -pl lite-e2e-tests -Pe2e test \
             -Dvab.gateway.url=http://localhost:8089 \
             -Dvab.order.url=http://localhost:8081
 

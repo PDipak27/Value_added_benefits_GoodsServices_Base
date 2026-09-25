@@ -41,3 +41,6 @@ Thumbs.db
 *.local
 # nektos/act secret file (real tokens) — never commit; see .secrets.example
 .secrets
+jenkins/ec2-trust-policy.json
+jenkins/jenkins-ecr-policy.json
+jenkins/jenkins-full-policy.json

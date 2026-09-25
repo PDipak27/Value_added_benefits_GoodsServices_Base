@@ -44,7 +44,7 @@ pipeline {
     stage('Build + integration tests') {
       steps {
 					sh '''
-					  mvn -B -ntp -Pit \
+					  mvn -B -ntp -Dlite -Pit \
 						-pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
 						verify
 					'''
@@ -63,7 +63,7 @@ pipeline {
       when { expression { return params.RUN_SONAR } }
       steps {
         withSonarQubeEnv('sonarqube') {
-          sh 'mvn -B -ntp sonar:sonar -Dsonar.projectKey=$SONAR_PROJECT_KEY'
+          sh 'mvn -B -ntp -Dlite sonar:sonar -Dsonar.projectKey=$SONAR_PROJECT_KEY'
         }
       }
     }

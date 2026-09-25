@@ -83,7 +83,7 @@ projector consumes from Kafka and materializes the read model in MongoDB.
 | Document store | MongoDB 7 (order read-model projections + catalog store; order reads have a read-your-writes fallback) |
 | Catalog read-cache | Caffeine L1 (in-process) + Redis 7 L2 (shared); evict-on-write + Redis pub/sub L1 broadcast (skip-self) + 15s TTL backstop, not event-driven; fail-open on Redis outage — DD-17/DD-18/DD-19/DD-20 |
 | Change data capture | Eventuate CDC (Polling mode) |
-| Schema registry (dev) | Apicurio (in-memory) |
+| Schema registry | none — Apicurio evaluated and dropped (events are plain Tram POJOs; see Design/10 §C3) |
 
 > ZooKeeper is present **only** for Eventuate CDC leader election, not for Kafka.
 
@@ -92,7 +92,7 @@ projector consumes from Kafka and materializes the read model in MongoDB.
 ```
 vabags_base/
 ├── pom.xml                 # parent POM (BOMs, Java 17, plugins)
-├── docker-compose.yml      # Kafka, ZK, CDC, Mongo, Redis, Apicurio
+├── docker-compose.yml      # Kafka, ZK, CDC, Mongo, Redis, Keycloak
 ├── shared-events/          # shared event/command contracts
 ├── api-gateway/
 ├── catalog-service/
@@ -115,7 +115,7 @@ Full instructions (Postgres setup, schema, smoke test, troubleshooting) live in
 # 1. Create the 'vab' Postgres DB + 'eventuate' user, then apply the schema
 psql -U eventuate -d vab -f deploy/postgres-init/01-eventuate-schema.sql
 
-# 2. Start infrastructure (Kafka, ZooKeeper, CDC, MongoDB, Redis, Apicurio)
+# 2. Start infrastructure (Kafka, ZooKeeper, CDC, MongoDB, Redis, Keycloak)
 docker-compose up -d
 
 # 3. Build all modules

@@ -8,21 +8,19 @@
     <artifactId>va-bags</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
-    <name>VA-BAGS :: Parent (Lite)</name>
+    <name>VA-BAGS :: Parent</name>
 
-    <!-- LITE aggregator (CI/CD + deployment practice). Same GAV as the full parent
-         (preserved as pom.xml.bkp) so the untouched original modules still resolve
-         their parent via the default ../pom.xml, and the full build stays runnable
-         with:  mvn -f pom.xml.bkp ...
-         Lite = api-gateway + saga orchestrator + 2 participants. See Design/lite-*. -->
+    <!-- ONE canonical parent for both editions (replaces the old pom.xml.bkp split).
+         Shared modules are always built; the service set is chosen by a property-activated
+         profile, so `-Pit` / `-Pe2e` never switch editions by accident:
+             mvn verify              → FULL edition (default: 8 services + e2e-tests)
+             mvn verify -Dlite       → LITE edition (api-gateway + 3 lite-* services + lite-e2e-tests)
+         Lite is a frozen, cost-optimized deploy variant — see Design/lite-* and
+         Design/12-full-flagship-plan.md. -->
     <modules>
         <module>shared-events</module>
         <module>shared-observability</module>
         <module>api-gateway</module>
-        <module>lite-order-service</module>
-        <module>lite-inventory-service</module>
-        <module>lite-billing-service</module>
-        <module>lite-e2e-tests</module>
     </modules>
 
     <properties>
@@ -38,8 +36,12 @@
              Spring Boot's dependency-management resolves flyway-core, flyway-database-postgresql,
              etc. against this property. -->
         <flyway.version>11.8.2</flyway.version>
-	    <testcontainers.version>1.21.4</testcontainers.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
 
+        <!-- SonarQube: host + token are NEVER committed — CI injects -Dsonar.host.url / -Dsonar.token.
+             Lite pipelines override the key with -Dsonar.projectKey=vabags-lite. -->
+        <sonar.projectKey>vabags</sonar.projectKey>
+        <sonar.projectName>VA-BAGS</sonar.projectName>
     </properties>
 
     <dependencyManagement>
@@ -128,7 +130,7 @@
 
         <!-- ── Testcontainers (integration tests, *IT — run via -Pit) ─────────────
              Versions come from the Spring Boot BOM's testcontainers-bom import.
-             Inherited by every Lite module; only the 3 backends actually ship *IT. -->
+             Inherited by every module; services ship their *IT under -Pit. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-testcontainers</artifactId>
@@ -259,9 +261,41 @@
     </build>
 
     <profiles>
+        <!-- FULL edition (default) — active unless -Dlite is given. -->
+        <profile>
+            <id>full</id>
+            <activation>
+                <property><name>!lite</name></property>
+            </activation>
+            <modules>
+                <module>catalog-service</module>
+                <module>order-service</module>
+                <module>inventory-service</module>
+                <module>billing-service</module>
+                <module>fulfilment-service</module>
+                <module>notification-service</module>
+                <module>ott-service</module>
+                <module>e2e-tests</module>
+            </modules>
+        </profile>
+
+        <!-- LITE edition — mvn ... -Dlite -->
+        <profile>
+            <id>lite</id>
+            <activation>
+                <property><name>lite</name></property>
+            </activation>
+            <modules>
+                <module>lite-order-service</module>
+                <module>lite-inventory-service</module>
+                <module>lite-billing-service</module>
+                <module>lite-e2e-tests</module>
+            </modules>
+        </profile>
+
         <!-- Integration tests (Testcontainers). Opt-in — they need a Docker daemon.
              Runs classes named *IT via failsafe in the integration-test/verify phases:
-                 mvn -pl lite-order-service,lite-inventory-service,lite-billing-service verify -Pit
+                 mvn -Pit verify            (full)   |   mvn -Pit verify -Dlite   (lite)
              argLine pins the JVM timezone: pgjdbc otherwise sends legacy "Asia/Calcutta"
              as `SET TimeZone`, which postgres:18 rejects. -->
         <profile>

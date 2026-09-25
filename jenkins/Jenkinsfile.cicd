@@ -63,7 +63,7 @@ pipeline {
     stage('Build + Unit + IT') {
       steps {
         sh '''
-          mvn -B -ntp -Pit \
+          mvn -B -ntp -Dlite -Pit \
             -pl "$LITE_MODULES_CSV" -am \
             verify
         '''
@@ -94,7 +94,7 @@ pipeline {
               [ "$i" = "30" ] && { echo "SonarQube not UP - is the compose stack running?"; exit 1; }
               sleep 5
             done
-            mvn -B -ntp \
+            mvn -B -ntp -Dlite \
               -pl "$LITE_MODULES_CSV" -am \
               sonar:sonar \
               -Dsonar.host.url="$SONAR_HOST_URL" \
@@ -172,7 +172,7 @@ pipeline {
           kubectl -n "$K8S_NAMESPACE" port-forward svc/api-gateway 8089:8089 >pf-gw.log 2>&1 &
           kubectl -n "$K8S_NAMESPACE" port-forward svc/lite-order-service 8081:8081 >pf-order.log 2>&1 &
           sleep 8
-          mvn -B -ntp -pl lite-e2e-tests -Pe2e test \
+          mvn -B -ntp -Dlite -pl lite-e2e-tests -Pe2e test \
             -Dvab.gateway.url=http://localhost:8089 \
             -Dvab.order.url=http://localhost:8081
         '''

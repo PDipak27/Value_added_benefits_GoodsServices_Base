@@ -43,7 +43,7 @@ pipeline {
     stage('Build jars') {
       steps {
         sh '''
-          mvn -B -ntp -DskipTests \
+          mvn -B -ntp -Dlite -DskipTests \
             -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
             package
         '''
@@ -100,7 +100,7 @@ pipeline {
           kubectl -n "$K8S_NAMESPACE" port-forward svc/api-gateway 8089:8089 >pf-gw.log 2>&1 &
           kubectl -n "$K8S_NAMESPACE" port-forward svc/lite-order-service 8081:8081 >pf-order.log 2>&1 &
           sleep 8
-          mvn -B -ntp -pl lite-e2e-tests -Pe2e test \
+          mvn -B -ntp -Dlite -pl lite-e2e-tests -Pe2e test \
             -Dvab.gateway.url=http://localhost:8089 \
             -Dvab.order.url=http://localhost:8081
         '''

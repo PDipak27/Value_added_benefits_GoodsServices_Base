@@ -52,7 +52,7 @@ Services started:
 | vab-zk        | 2181      | ZooKeeper — CDC leader election only           |
 | vab-cdc       | 8080      | Eventuate CDC (Polling → Kafka, 2 pipelines)   |
 | vab-mongo     | 27017     | MongoDB read projections                       |
-| vab-apicurio  | 8090      | Schema registry (dev; container :8080 → :8090) |
+| ~~vab-apicurio~~ | — | Removed (unused schema registry, C3) |
 | vab-keycloak  | 8088      | OIDC Provider (Keycloak, Postgres-backed) — realm `vab` (§A-1) |
 
 Check CDC is up:

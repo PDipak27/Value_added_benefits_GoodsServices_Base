@@ -1,0 +1,70 @@
+# eksctl ClusterConfig for the FULL edition — declarative, reviewed in git (rendered by
+# create-cluster.sh, which fills the __PLACEHOLDERS__). Cost-first choices, same as Lite:
+#   • no NAT gateway (≈$1/day saved): nodes sit in PUBLIC subnets and egress via the IGW
+#   • spot managed node group, 2 × *.large (8 GiB) — the full stack requests ≈ 6–7 GiB
+#   • EBS CSI add-on (IRSA via the cluster OIDC provider) for the StatefulSets' gp3 PVCs
+#   • EKS access entries (API auth mode) instead of editing the aws-auth ConfigMap
+# Pod density: VPC-CNI gives a t3.large 35 pods (t3.medium only 17). ~15 app/infra pods +
+# system pods fit comfortably on 2 nodes.
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: __CLUSTER_NAME__
+  region: __AWS_REGION__
+  tags:
+    project: vabags
+    edition: full
+
+iam:
+  withOIDC: true
+
+vpc:
+  nat:
+    gateway: Disable
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: true
+
+accessConfig:
+  authenticationMode: API_AND_CONFIG_MAP
+  bootstrapClusterCreatorAdminPermissions: true
+  # __ACCESS_ENTRIES_BEGIN__
+  accessEntries:
+    # The Jenkins EC2 instance-profile role deploys the app. Cluster-admin keeps the demo simple
+    # (deploy.sh also applies the gp3 StorageClass + Namespace). To scope it down, apply
+    # platform.yaml as the cluster creator and use AmazonEKSAdminPolicy with
+    # accessScope { type: namespace, namespaces: [vabags] }.
+    - principalARN: __JENKINS_ROLE_ARN__
+      accessPolicies:
+        - policyARN: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          accessScope:
+            type: cluster
+  # __ACCESS_ENTRIES_END__
+
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: aws-ebs-csi-driver
+    wellKnownPolicies:
+      ebsCSIController: true
+
+managedNodeGroups:
+  - name: ng-spot
+    instanceTypes: ["t3.large", "t3a.large", "m5.large", "m5a.large"]   # diversify → fewer spot interruptions
+    spot: true
+    minSize: 2
+    maxSize: 3
+    desiredCapacity: 2
+    volumeSize: 30
+    volumeType: gp3
+    privateNetworking: false
+    labels:
+      edition: full
+    iam:
+      attachPolicyARNs:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly   # pull from ECR
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore          # SSM shell, no SSH keys

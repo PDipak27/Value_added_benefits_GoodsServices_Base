@@ -106,7 +106,7 @@ iamidentitymapping --arn <role> --group system:masters`) — getting a kubeconfi
 
 **`Jenkinsfile.ci`**
 1. **Checkout** — `checkout scm`.
-2. **Build + integration tests** — `mvn -Pit … verify`; Testcontainers starts real Postgres + Kafka
+2. **Build + integration tests** — `mvn -Dlite -Pit … verify`; Testcontainers starts real Postgres + Kafka
    (agent Docker required). Results published via `junit` (surefire + failsafe reports).
 3. **SonarQube** (`when RUN_SONAR`) — `withSonarQubeEnv` + `mvn sonar:sonar`.
 4. **Build images** — 4 images from `Dockerfile.lite`, tagged `$DOCKERHUB_USR/<svc>:<sha>` + `:latest`.

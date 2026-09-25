@@ -103,7 +103,7 @@ exchange, and exports the temp creds for every later `aws`/`docker`/`kubectl` st
 
 ### 1.4 What each workflow step does (cloud vs local)
 - **checkout + setup-java** — GitHub runners are blank VMs (act self-hosted reused your host, so `local-ci.yml` skips these).
-- **build + IT** — `mvn -Pit verify`; GitHub runners ship Docker, so Testcontainers spins real PG+Kafka.
+- **build + IT** — `mvn -Dlite -Pit verify`; GitHub runners ship Docker, so Testcontainers spins real PG+Kafka.
 - **SonarQube** — points at a *reachable* server (SonarCloud/hosted); your laptop's `localhost:9000` is invisible to the cloud runner.
 - **build + push images** — Docker Hub by default; ECR in the AWS path.
 - **deploy to EKS** — `aws eks update-kubeconfig` writes a kubeconfig whose auth calls `aws eks get-token`; `kubectl set image` rolls the Deployments to the new SHA tag.

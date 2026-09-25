@@ -35,6 +35,9 @@ abstract class E2EBase {
     protected static final String CATALOG  = prop("vab.catalog.url",  "http://localhost:8085");
     protected static final String OTT       = prop("vab.ott.url",      "http://localhost:8087");
     protected static final String KEYCLOAK  = prop("vab.keycloak.url", "http://localhost:8088");
+    // Keycloak master-realm admin (user creation via Admin API). EKS overrides these from a Secret.
+    private static final String KC_ADMIN_USER     = prop("vab.keycloak.admin.user", "admin");
+    private static final String KC_ADMIN_PASSWORD = prop("vab.keycloak.admin.password", "admin");
     static {
     System.out.println("GW uRL:"+System.getProperty("vab.gateway.url"));
     System.out.println("keyCloak uRL:"+	System.getProperty("vab.keycloak.url") );
@@ -106,7 +109,7 @@ abstract class E2EBase {
         return given().baseUri(KEYCLOAK)
                 .contentType("application/x-www-form-urlencoded")
                 .formParam("grant_type", "password").formParam("client_id", "admin-cli")
-                .formParam("username", "admin").formParam("password", "admin")
+                .formParam("username", KC_ADMIN_USER).formParam("password", KC_ADMIN_PASSWORD)
                 .when().post("/realms/master/protocol/openid-connect/token")
                 .then().statusCode(200).extract().path("access_token");
     }

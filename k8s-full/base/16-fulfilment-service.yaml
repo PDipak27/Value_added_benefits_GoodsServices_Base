@@ -1,0 +1,53 @@
+# Fulfilment — forward-only saga tail; provisions OTT entitlements with a Keycloak
+# client-credentials token (in-cluster token endpoint; secret from vabags-secrets).
+# Image is the bare name `vabags/fulfilment-service`; deploy.sh rewrites it to <ECR>/vabags/fulfilment-service:<git-sha>.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fulfilment-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: fulfilment-service }
+  template:
+    metadata:
+      labels: { app: fulfilment-service }
+    spec:
+      containers:
+        - name: fulfilment-service
+          image: vabags/fulfilment-service
+          ports:
+            - containerPort: 8086
+          envFrom:
+            - configMapRef: { name: vabags-endpoints }
+            - secretRef: { name: vabags-secrets }
+          env:
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: vabags-secrets, key: KEYCLOAK_CLIENT_SECRET } }
+          startupProbe:                    # slow JVM boot on small shared nodes
+            httpGet: { path: /actuator/health/liveness, port: 8086 }
+            periodSeconds: 10
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8086 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8086 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fulfilment-service
+spec:
+  selector: { app: fulfilment-service }
+  ports:
+    - port: 8086
+      targetPort: 8086

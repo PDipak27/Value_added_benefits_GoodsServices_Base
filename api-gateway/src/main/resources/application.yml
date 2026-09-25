@@ -3,12 +3,17 @@ server:
   shutdown: graceful
   # §E2 edge TLS: the gateway terminates HTTPS for external clients. Generate the
   # keystore first (deploy/tls/README.md); set GATEWAY_SSL_ENABLED=false to run plain HTTP.
+  # Everything is env-driven so the same jar runs anywhere:
+  #   laptop  → default ./deploy/tls/gateway-keystore.p12 (run from source/vabags_base)
+  #   EC2/EKS → GATEWAY_SSL_KEYSTORE=file:/etc/vab/tls/gateway-keystore.p12 (mounted from a
+  #             k8s Secret or a host dir) + GATEWAY_SSL_KEYSTORE_PASSWORD from a Secret.
+  #             See k8s-full/scripts/gen-selfsigned-tls.sh.
   ssl:
     enabled: ${GATEWAY_SSL_ENABLED:true}
-    key-store: ${GATEWAY_SSL_KEYSTORE:file:D:/Dev/E_Learn/courses/DVA-C02/Projects/VA-BAGS/source/vabags_base/deploy/tls/gateway-keystore.p12}
+    key-store: ${GATEWAY_SSL_KEYSTORE:file:./deploy/tls/gateway-keystore.p12}
     key-store-password: ${GATEWAY_SSL_KEYSTORE_PASSWORD:changeit}
     key-store-type: PKCS12
-    key-alias: gateway
+    key-alias: ${GATEWAY_SSL_KEY_ALIAS:gateway}
 
 spring:
   application:

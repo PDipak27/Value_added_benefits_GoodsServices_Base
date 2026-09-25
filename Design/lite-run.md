@@ -8,13 +8,13 @@ How to build and happy-path-verify VA-BAGS Lite (see [lite-scope-outline.md](lit
 
 ```bash
 # Lite reactor is the default pom.xml. Build the 4 services (+ shared libs):
-mvn -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am package -DskipTests
+mvn -Dlite -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am package -DskipTests
 ```
 
 The full 8-service build is preserved and still runnable via the backup aggregator:
 
 ```bash
-mvn -f pom.xml.bkp -DskipTests package
+mvn -DskipTests package   # full edition is the default reactor
 ```
 
 ## Run (waves, per the 2c/4t box)
@@ -59,7 +59,7 @@ java -Duser.timezone=Asia/Kolkata -jar api-gateway/target/api-gateway-0.1.0-SNAP
 ## Happy-path e2e
 
 ```bash
-mvn -pl lite-e2e-tests -Pe2e test -Dvab.gateway.url=http://localhost:8089
+mvn -Dlite -pl lite-e2e-tests -Pe2e test -Dvab.gateway.url=http://localhost:8089
 ```
 
 Drives: place PAY_NOW order (subscriber `sub-premium`, offer `OTT_NETFLIX_6M`) →

@@ -18,7 +18,7 @@ Design docs: `Design/lite-scope-outline.md`, `Design/lite-cutlist.md`, `Design/l
 
 Lite modules are **copies** of the full modules (same `com.vab.*` packages), so changes here do NOT
 affect the full `order-service`/`inventory-service`/`billing-service` (still on disk, built via
-`mvn -f pom.xml.bkp`). `shared-events` + `shared-observability` are shared by both.
+`mvn` default reactor; lite needs `-Dlite`). `shared-events` + `shared-observability` are shared by both.
 
 What was trimmed (relevant when writing/porting tests):
 - **lite-order-service**: dropped the Mongo CQRS query side (`com/vab/order/query/**` except a new
@@ -42,9 +42,9 @@ What was trimmed (relevant when writing/porting tests):
   `-Dspring.profiles.active=lite`).
 
 ```bash
-mvn -Pit verify                                   # unit + IT + JaCoCo report
-mvn verify                                         # unit-only (fast, no Docker)
-mvn -pl lite-e2e-tests -Pe2e test -Dvab.gateway.url=http://localhost:8089
+mvn -Dlite -Pit verify                                   # unit + IT + JaCoCo report
+mvn -Dlite verify                                         # unit-only (fast, no Docker)
+mvn -Dlite -pl lite-e2e-tests -Pe2e test -Dvab.gateway.url=http://localhost:8089
 ```
 
 ## Current test state (what exists)
@@ -57,7 +57,7 @@ mvn -pl lite-e2e-tests -Pe2e test -Dvab.gateway.url=http://localhost:8089
 - **JaCoCo** wired in the parent `pom.xml` (`prepare-agent` + `report` at `verify` →
   `target/site/jacoco/jacoco.xml`; unit+IT merged via failsafe `@{argLine}`). Surefire excludes
   `**/Abstract*.java` so the Testcontainers IT base doesn't start Docker in the unit phase.
-- **NOT yet verified with a real `mvn -Pit verify` run** — do that first in this fork.
+- **NOT yet verified with a real `mvn -Dlite -Pit verify` run** — do that first in this fork.
 
 ## Full-version tests still available to mine (in `order-service/src/test/...`)
 Skipped in the copy because they touch dropped Lite features — port only if you re-add the feature:
@@ -73,7 +73,7 @@ Skipped in the copy because they touch dropped Lite features — port only if yo
 - Some `*Test` files carry `withReuse(true)` and `System.out.println` debug the user added — fine.
 
 ## Likely next steps in this fork
-- Run `mvn -Pit verify`, fix any red, confirm JaCoCo report generates.
+- Run `mvn -Dlite -Pit verify`, fix any red, confirm JaCoCo report generates.
 - Raise coverage (saga branch/compensation paths, controller validation, error mapping).
 - Add IT/e2e for failure paths (declined billing, out-of-stock inventory, cancel).
 - Any app changes to make behaviour more testable (keep them in `lite-*` modules).

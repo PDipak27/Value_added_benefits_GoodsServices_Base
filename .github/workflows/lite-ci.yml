@@ -46,7 +46,7 @@ jobs:
       #    failsafe argLine pins -Duser.timezone=Asia/Kolkata (postgres:18 rejects Asia/Calcutta).
       - name: Build + integration tests (Testcontainers)
         run: |
-          mvn -B -ntp -Pit \
+          mvn -B -ntp -Dlite -Pit \
             -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
             verify
 
@@ -56,7 +56,7 @@ jobs:
       - name: SonarQube analysis
         if: vars.ENABLE_SONAR == 'true'
         run: |
-          mvn -B -ntp sonar:sonar \
+          mvn -B -ntp -Dlite sonar:sonar \
             -Dsonar.host.url="${{ vars.SONAR_HOST_URL }}" \
             -Dsonar.token="$SONAR_TOKEN" \
             -Dsonar.projectKey="$SONAR_PROJECT_KEY"

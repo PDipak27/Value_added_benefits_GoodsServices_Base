@@ -33,7 +33,7 @@ gateway calls order over HTTP (in-cluster `lite-order-service:8081`).
 
 ```bash
 # 0) Build jars (host)
-mvn -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am -DskipTests package
+mvn -Dlite -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am -DskipTests package
 ```
 ```bash
 # 1) Build the 4 images (IST baked)  +  import into k3d's containerd
@@ -66,7 +66,7 @@ kubectl -n vabags-lite port-forward svc/lite-order-service 8081:8081   # separat
 # if the LoadBalancer isn't reachable on :8089, also: kubectl -n vabags-lite port-forward svc/api-gateway 8089:8089
 ```
 ```bash
-mvn -pl lite-e2e-tests -Pe2e test -Dvab.gateway.url=http://localhost:8089 -Dvab.order.url=http://localhost:8081
+mvn -Dlite -pl lite-e2e-tests -Pe2e test -Dvab.gateway.url=http://localhost:8089 -Dvab.order.url=http://localhost:8081
 ```
 
 ## Teardown
