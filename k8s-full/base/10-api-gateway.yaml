@@ -1,0 +1,76 @@
+# Edge gateway (Spring Cloud Gateway, reactive resource server). Terminates TLS ITSELF with the
+# self-signed keystore from the gateway-tls Secret — the api-gateway-public NLB is plain TCP
+# passthrough (no ACM: AWS-provided hostnames can't get a public CA cert). Routes are rebound to
+# Service DNS via env (a list binds from ONE source, so id+uri+predicates are all supplied).
+# Image is the bare name `vabags/api-gateway`; deploy.sh rewrites it to <ECR>/vabags/api-gateway:<git-sha>.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: api-gateway }
+  template:
+    metadata:
+      labels: { app: api-gateway }
+      annotations:
+        vab/public-config-hash: PUBLIC_CONFIG_HASH   # deploy.sh → restart when public URLs change
+    spec:
+      containers:
+        - name: api-gateway
+          image: vabags/api-gateway
+          ports:
+            - containerPort: 8089
+          envFrom:
+            - configMapRef: { name: vabags-endpoints }
+            - configMapRef: { name: vabags-public }      # KEYCLOAK_ISSUER (public iss)
+            - secretRef: { name: vabags-secrets }
+          env:
+            - { name: GATEWAY_SSL_ENABLED, value: "true" }
+            - { name: GATEWAY_SSL_KEYSTORE, value: "file:/etc/vab/tls/gateway-keystore.p12" }
+            - name: GATEWAY_SSL_KEYSTORE_PASSWORD
+              valueFrom: { secretKeyRef: { name: gateway-tls, key: password } }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_0_ID, value: "catalog-service" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_0_URI, value: "http://catalog-service:8085" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_0_PREDICATES_0, value: "Path=/v1/offers/**" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_1_ID, value: "order-service" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_1_URI, value: "http://order-service:8081" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_1_PREDICATES_0, value: "Path=/v1/orders/**" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_2_ID, value: "order-entitlements" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_2_URI, value: "http://order-service:8081" }
+            - { name: SPRING_CLOUD_GATEWAY_ROUTES_2_PREDICATES_0, value: "Path=/v1/entitlements/**" }
+          volumeMounts:
+            - { name: tls, mountPath: /etc/vab/tls, readOnly: true }
+          startupProbe:                    # slow JVM boot on small shared nodes
+            httpGet: { path: /actuator/health/liveness, port: 8089, scheme: HTTPS }
+            periodSeconds: 10
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8089, scheme: HTTPS }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8089, scheme: HTTPS }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
+      volumes:
+        - name: tls
+          secret:
+            secretName: gateway-tls
+            items: [ { key: gateway-keystore.p12, path: gateway-keystore.p12 } ]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+spec:
+  selector: { app: api-gateway }
+  ports:
+    - port: 8089
+      targetPort: 8089

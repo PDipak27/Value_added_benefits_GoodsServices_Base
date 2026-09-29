@@ -1,0 +1,49 @@
+# Notification — event consumer (post-completion / DD-27 admin alerts).
+# Image is the bare name `vabags/notification-service`; deploy.sh rewrites it to <ECR>/vabags/notification-service:<git-sha>.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: notification-service }
+  template:
+    metadata:
+      labels: { app: notification-service }
+    spec:
+      containers:
+        - name: notification-service
+          image: vabags/notification-service
+          ports:
+            - containerPort: 8084
+          envFrom:
+            - configMapRef: { name: vabags-endpoints }
+            - secretRef: { name: vabags-secrets }
+          startupProbe:                    # slow JVM boot on small shared nodes
+            httpGet: { path: /actuator/health/liveness, port: 8084 }
+            periodSeconds: 10
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8084 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8084 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+spec:
+  selector: { app: notification-service }
+  ports:
+    - port: 8084
+      targetPort: 8084

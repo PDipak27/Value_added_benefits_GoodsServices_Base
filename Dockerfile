@@ -13,22 +13,26 @@
 FROM eclipse-temurin:17-jre AS layers
 WORKDIR /app
 ARG MODULE
-COPY ${MODULE}/target/*.jar app.jar 
 # the repackaged boot jar (target/*.jar; .jar.original is skipped)
-#RUN java -Djarmode=layertools -jar app.jar extract
+COPY ${MODULE}/target/*.jar app.jar
 RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination extracted
 
 # ---------- stage 2: runtime ----------
 FROM eclipse-temurin:17-jre
 WORKDIR /app
-#RUN useradd -r -u 1001 spring
-RUN useradd -r spring                   
+
+# IST timezone (same fix as Dockerfile.lite). Without -Duser.timezone the JVM resolves the legacy
+# "Asia/Calcutta", which pgjdbc sends as `SET TimeZone` and postgres:18 rejects (Flyway fails).
+# NOTE: a JAVA_TOOL_OPTIONS set by k8s REPLACES this one, so the k8s ConfigMaps repeat the flag.
+ENV TZ=Asia/Kolkata
+ENV JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Kolkata"
+
 # never run as root
+RUN useradd -r spring
 COPY --from=layers /app/extracted/dependencies/          ./
 COPY --from=layers /app/extracted/spring-boot-loader/     ./
 COPY --from=layers /app/extracted/snapshot-dependencies/  ./
 COPY --from=layers /app/extracted/application/            ./
-#USER 1001
 USER spring
 
 # JarLauncher = the Spring Boot 3.x layered-jar entry point; JAVA_TOOL_OPTIONS (set in k8s) is honoured automatically

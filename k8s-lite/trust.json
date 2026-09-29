@@ -1,0 +1,12 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": { "Federated": "arn:aws:iam::012468947512:oidc-provider/token.actions.githubusercontent.com" },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
+      "StringLike":   { "token.actions.githubusercontent.com:sub": "repo:PDipak27/Value_added_benefits_GoodsServices_Base:ref:refs/heads/cicdLite" }
+    }
+  }]
+}

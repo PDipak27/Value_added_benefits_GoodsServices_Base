@@ -1,0 +1,92 @@
+# Keycloak 26 — OIDC provider (DD-29), PRODUCTION mode (`start`, not `start-dev`; closes §E3).
+#
+# Split-horizon, because AWS-provided NLB hostnames can't get a public CA cert:
+#   • HTTPS :8443 — for BROWSERS, via the keycloak-public NLB (TLS passthrough, self-signed cert
+#     from the keycloak-tls Secret). KC_HOSTNAME = that public URL, so every token's `iss`, every
+#     redirect and the discovery doc use it.
+#   • HTTP  :8080 — for PODS only (ClusterIP Service `keycloak`): token / JWKS / userinfo calls.
+#     The realm's sslRequired=external still allows plain HTTP from private (VPC) addresses.
+#     KC_HOSTNAME_BACKCHANNEL_DYNAMIC lets those back-channel calls use the internal URL.
+#
+# Realm import: the `keycloak-realm` ConfigMap is RENDERED by deploy.sh from deploy/keycloak/
+# vab-realm.json (OTT redirect URI → the OTT NLB URL, provisioning client secret → the generated
+# one). --import-realm skips a realm that already exists, so later edits need the admin console/kcadm.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: keycloak }
+  template:
+    metadata:
+      labels: { app: keycloak }
+      annotations:
+        vab/public-config-hash: PUBLIC_CONFIG_HASH   # replaced by deploy.sh → restart on URL change
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.0
+          args: ["start", "--import-realm"]
+          envFrom:
+            - configMapRef: { name: vabags-public }        # KC_HOSTNAME
+          env:
+            - { name: KC_DB, value: postgres }
+            - { name: KC_DB_URL, value: "jdbc:postgresql://postgres:5432/keycloak" }
+            - name: KC_DB_USERNAME
+              valueFrom: { secretKeyRef: { name: vabags-secrets, key: SPRING_DATASOURCE_USERNAME } }
+            - name: KC_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: vabags-secrets, key: SPRING_DATASOURCE_PASSWORD } }
+            - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: admin }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: vabags-secrets, key: KC_ADMIN_PASSWORD } }
+            - { name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC, value: "true" }
+            - { name: KC_HTTP_ENABLED, value: "true" }
+            - { name: KC_HTTP_PORT, value: "8080" }
+            - { name: KC_HTTPS_PORT, value: "8443" }
+            - { name: KC_HTTPS_CERTIFICATE_FILE, value: /etc/kc-tls/tls.crt }
+            - { name: KC_HTTPS_CERTIFICATE_KEY_FILE, value: /etc/kc-tls/tls.key }
+            - { name: KC_HEALTH_ENABLED, value: "true" }
+            - { name: JAVA_OPTS_KC_HEAP, value: "-Xms128m -Xmx448m" }
+            - { name: TZ, value: Asia/Kolkata }
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: https, containerPort: 8443 }
+            - { name: management, containerPort: 9000 }
+          volumeMounts:
+            - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+            - { name: tls, mountPath: /etc/kc-tls, readOnly: true }
+          # The management interface (:9000) inherits the HTTPS config → probe over HTTPS
+          # (kubelet does not verify certificates).
+          startupProbe:                      # `start` runs an auto-build on first boot: slow
+            httpGet: { path: /health/started, port: 9000, scheme: HTTPS }
+            periodSeconds: 10
+            failureThreshold: 36
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 9000, scheme: HTTPS }
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: /health/live, port: 9000, scheme: HTTPS }
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests: { cpu: "200m", memory: "640Mi" }
+            limits: { memory: "900Mi" }
+      volumes:
+        - name: realm
+          configMap: { name: keycloak-realm }
+        - name: tls
+          secret: { secretName: keycloak-tls }
+---
+# In-cluster (pods) endpoint — plain HTTP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+spec:
+  selector: { app: keycloak }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }

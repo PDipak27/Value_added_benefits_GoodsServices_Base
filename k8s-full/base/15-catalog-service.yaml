@@ -1,0 +1,51 @@
+# Catalog — offers + eligibility over Mongo `vab_catalog`, two-level cache (Caffeine L1 + Redis L2).
+# Image is the bare name `vabags/catalog-service`; deploy.sh rewrites it to <ECR>/vabags/catalog-service:<git-sha>.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: catalog-service }
+  template:
+    metadata:
+      labels: { app: catalog-service }
+    spec:
+      containers:
+        - name: catalog-service
+          image: vabags/catalog-service
+          ports:
+            - containerPort: 8085
+          envFrom:
+            - configMapRef: { name: vabags-endpoints }
+            - secretRef: { name: vabags-secrets }
+          env:
+            - { name: SPRING_DATA_MONGODB_URI, value: "mongodb://mongo:27017/vab_catalog" }
+          startupProbe:                    # slow JVM boot on small shared nodes
+            httpGet: { path: /actuator/health/liveness, port: 8085 }
+            periodSeconds: 10
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8085 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8085 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-service
+spec:
+  selector: { app: catalog-service }
+  ports:
+    - port: 8085
+      targetPort: 8085

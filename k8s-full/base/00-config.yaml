@@ -1,0 +1,44 @@
+# Shared, NON-secret config for every FULL-edition pod (envFrom). Everything is in-cluster
+# Service DNS. Services ignore keys they don't use (e.g. inventory has no Mongo starter).
+#
+# Two more config objects are created by k8s-full/scripts/deploy.sh (not committed, because
+# their values only exist at deploy time):
+#   ConfigMap vabags-public  — public NLB URLs (KEYCLOAK_ISSUER, KEYCLOAK_PUBLIC_URL, KC_HOSTNAME, ...)
+#   Secret    vabags-secrets — generated DB / Keycloak-admin / provisioning-client secrets
+#   Secrets   gateway-tls, keycloak-tls — self-signed certs for the AWS-provided NLB hostnames
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vabags-endpoints
+data:
+  # ── in-cluster infra ────────────────────────────────────────────────────
+  SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/vab
+  SPRING_DATA_MONGODB_URI: mongodb://mongo:27017/vab
+  SPRING_DATA_REDIS_HOST: redis
+  SPRING_DATA_REDIS_PORT: "6379"
+  EVENTUATELOCAL_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  CATALOG_BASE_URL: http://catalog-service:8085
+  OTT_BASE_URL: http://ott-service:8087
+
+  # ── split-horizon Keycloak (Design/12 §5) ───────────────────────────────
+  # Pods talk to Keycloak in-cluster over HTTP; browsers use the public HTTPS NLB. The token
+  # `iss` is always the PUBLIC URL (KC_HOSTNAME), so resource servers validate iss against
+  # KEYCLOAK_ISSUER (vabags-public) but fetch keys from the in-cluster JWKS below — no OIDC
+  # discovery at boot, no hairpin through the load balancer.
+  KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+  KEYCLOAK_TOKEN_URI: http://keycloak:8080/realms/vab/protocol/openid-connect/token
+  SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/vab/protocol/openid-connect/certs
+  # `eks` profile: only ott-service defines one (login client with explicit endpoints).
+  SPRING_PROFILES_ACTIVE: eks
+
+  # ── DB connection budget: 7 JDBC services × 3 + Keycloak + CDC ≪ max_connections ──
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "3"
+  SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "1"
+
+  # ── runtime knobs ───────────────────────────────────────────────────────
+  APP_LOG_DIR: /tmp                               # logback file appender; kubectl logs uses stdout
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
+  TZ: Asia/Kolkata
+  # Replaces the image's JAVA_TOOL_OPTIONS entirely → repeat the IST flag (postgres:18 rejects
+  # the JVM's legacy "Asia/Calcutta"). C1-only JIT + SerialGC = fast boot on small nodes.
+  JAVA_TOOL_OPTIONS: "-Duser.timezone=Asia/Kolkata -Xmx224m -XX:MaxMetaspaceSize=176m -XX:+UseSerialGC -XX:TieredStopAtLevel=1"

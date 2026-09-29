@@ -1,0 +1,60 @@
+server:
+  port: 8083
+  shutdown: graceful
+
+spring:
+  application:
+    name: billing-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5433/vab
+    username: eventuate
+    password: eventuate
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: billing
+
+  flyway:
+    enabled: true
+    schemas: billing
+    locations: #flyway auto adds locations.
+    - classpath:db/migration
+
+eventuatelocal:
+  kafka:
+    bootstrap:
+      servers: localhost:9094
+
+management:
+  # §perf: no span export unless `obs` is active — old sampled traceparents on Kafka/HTTP hops
+  # would otherwise force export attempts at Tempo. traceId in logs is unaffected.
+  otlp:
+    tracing:
+      export:
+        enabled: false
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    com.vab: DEBUG
+    io.eventuate: INFO
+
+---
+# §perf: `obs` profile — allow OTLP span export to Tempo.
+spring:
+  config:
+    activate:
+      on-profile: obs
+management:
+  otlp:
+    tracing:
+      export:
+        enabled: true

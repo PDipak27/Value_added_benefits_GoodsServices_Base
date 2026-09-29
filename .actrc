@@ -1,0 +1,5 @@
+# nektos/act defaults for this repo.
+# Run the local pipeline on the HOST (self-hosted), not in an act container — so k3d,
+# docker-compose, the host SonarQube and Testcontainers all share one Docker daemon.
+-P ubuntu-latest=-self-hosted
+--bind

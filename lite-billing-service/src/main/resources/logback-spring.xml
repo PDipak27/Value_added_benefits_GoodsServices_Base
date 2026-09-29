@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  App-code logging: each service writes only its own com.vab.* log statements to
+  its own file, vabags-<svc>.log, keeping app code apart from framework noise
+  (which stays on the console). Rolls strictly at 1MB into numbered archives
+  vabags-<svc>.1.log .. .20.log. Override the directory with -DAPP_LOG_DIR=...
+  (default: D:/Dev/E_Learn/courses/DVA-C02/Projects/VA-BAGS/source/applogs).
+-->
+<configuration>
+    <!-- §2: blank the console trace-correlation (Spring's %correlationId pads to a wide empty [ ]
+         on non-request logs). Must be defined BEFORE defaults.xml (which bakes it into
+         CONSOLE_LOG_PATTERN); %X of a never-set MDC key renders as empty, and logback rejects
+         a blank <property> value. traceId still goes to the per-service file + Loki. -->
+    <property name="LOG_CORRELATION_PATTERN" value="%X{vabNoop:-}"/>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <!-- §C2: Loki push endpoint (loki4j). Override with -DLOKI_URL=... -->
+    <property name="LOKI_URL" value="${LOKI_URL:-http://localhost:3100/loki/api/v1/push}"/>
+
+    <property name="APP_LOG_DIR" value="${APP_LOG_DIR:-D:/Dev/E_Learn/courses/DVA-C02/Projects/VA-BAGS/source/applogs}"/>
+    <property name="svc" value="billing-service"/>
+
+    <appender name="APP_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${APP_LOG_DIR}/vabags-${svc}.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
+            <fileNamePattern>${APP_LOG_DIR}/vabags-${svc}.%i.log</fileNamePattern>
+            <minIndex>1</minIndex>
+            <maxIndex>20</maxIndex>
+        </rollingPolicy>
+        <!-- Strict size trigger: roll the moment the active file passes 1MB. -->
+        <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+            <maxFileSize>1MB</maxFileSize>
+        </triggeringPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [${svc}] %-5level %logger{36} traceId=%X{traceId:-} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- §C2: structured JSON on the console (all logs); includes MDC (correlationId lands in B-2). -->
+    <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"service":"${svc}"}</customFields>
+            <timeZone>Asia/Kolkata</timeZone>
+        </encoder>
+    </appender>
+
+    <!-- §C2: push every log to Loki (loki4j; async — buffers/drops if Loki is down, never blocks the app). -->
+    <appender name="LOKI" class="com.github.loki4j.logback.Loki4jAppender">
+        <http><url>${LOKI_URL}</url></http>
+        <format>
+            <label><pattern>app=vabags,service=${svc},level=%level</pattern></label>
+            <!-- §C2: JSON line body → Loki fields (message, traceId, spanId, correlationId, logger_name,
+                 thread_name) are cleanly typed and filterable via `| json` (loki4j 1.5.2 has no
+                 structured-metadata support; MDC — incl. Micrometer traceId/spanId — is auto-included). -->
+            <message class="net.logstash.logback.layout.LogstashLayout">
+                <includeContext>false</includeContext>
+                <timeZone>Asia/Kolkata</timeZone>
+            </message>
+        </format>
+    </appender>
+
+    <!-- Our own code (com.vab.*) still writes to the human-readable per-service file. -->
+    <logger name="com.vab" level="INFO">
+        <appender-ref ref="APP_FILE"/>
+    </logger>
+
+    <!-- §3: silence Kafka client chatter (group-coordinator discovery, node disconnects). -->
+    <logger name="org.apache.kafka" level="WARN"/>
+
+    <root level="INFO">
+        <!-- §2: plain-text console by default; JSON only when the `jsonlogs` profile is active. -->
+        <springProfile name="jsonlogs">
+            <appender-ref ref="CONSOLE_JSON"/>
+        </springProfile>
+        <springProfile name="!jsonlogs">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="APP_FILE"/>
+        </springProfile>
+        <!-- §1: push to Loki only when the `obs` profile is active (Loki/Grafana/Tempo stay optional). -->
+        <springProfile name="obs">
+            <appender-ref ref="LOKI"/>
+        </springProfile>
+    </root>
+</configuration>

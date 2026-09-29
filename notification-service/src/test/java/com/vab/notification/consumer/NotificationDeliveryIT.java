@@ -41,7 +41,7 @@ import static org.mockito.Mockito.when;
 @Import({NotificationTemplates.class, NotificationRouter.class,
         NotificationDispatcher.class, NotificationEventConsumer.class})
 @TestPropertySource(properties = "notification.admin-recipient=ops-desk@vab.example")
-class NotificationDeliveryIntegrationTest {
+class NotificationDeliveryIT {
 
     @Container
     @ServiceConnection

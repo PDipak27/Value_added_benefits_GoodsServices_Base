@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: vabags-lite
+
+resources:
+  - 00-namespace-config.yaml
+  - 01-postgres.yaml
+  - 02-kafka.yaml
+  - 03-zookeeper.yaml
+  - 04-eventuate-cdc.yaml
+  - 10-api-gateway.yaml
+  - 11-lite-order-service.yaml
+  - 12-lite-inventory-service.yaml
+  - 13-lite-billing-service.yaml
+
+# Generate the Postgres init ConfigMap straight from the existing SQL (no huge inline copy).
+# kustomize appends a content hash to the name and rewrites the volume reference in 01-postgres.yaml.
+configMapGenerator:
+  - name: pg-init
+    files:
+      - ../deploy/postgres-init/01-eventuate-schema.sql
+      - ../deploy/postgres-init/04-tram-saga-schema.sql
+
+# Image registry + tag are injected at DEPLOY time by the workflow, e.g.:
+#   cd k8s-lite-aws
+#   for s in api-gateway lite-order-service lite-inventory-service lite-billing-service; do
+#     kustomize edit set image vabags/$s=$REGISTRY/vabags/$s:$SHA
+#   done
+#   cd ..
+#   kubectl kustomize --load-restrictor=LoadRestrictionsNone k8s-lite-aws | kubectl apply -f -
+#
+# NOTE: the configMapGenerator reads ../deploy/postgres-init (above this dir), so the build
+# needs --load-restrictor=LoadRestrictionsNone. Plain `kubectl apply -k k8s-lite-aws` will
+# refuse with a "security; file not in or below" error — use the piped command above instead.
+# (Committed with no `images:` block so a stray build never pulls from Docker Hub.)

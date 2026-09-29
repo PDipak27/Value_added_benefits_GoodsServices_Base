@@ -1,0 +1,54 @@
+# OTT — the "third-party" provider: M2M provisioning API (resource server, aud=ott-service) and
+# the subscriber video surface (OIDC login client, `eks` profile = split-horizon endpoints).
+# Browsers reach it through the ott-public NLB (plain HTTP).
+# Image is the bare name `vabags/ott-service`; deploy.sh rewrites it to <ECR>/vabags/ott-service:<git-sha>.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ott-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ott-service }
+  template:
+    metadata:
+      labels: { app: ott-service }
+      annotations:
+        vab/public-config-hash: PUBLIC_CONFIG_HASH   # deploy.sh → restart when public URLs change
+    spec:
+      containers:
+        - name: ott-service
+          image: vabags/ott-service
+          ports:
+            - containerPort: 8087
+          envFrom:
+            - configMapRef: { name: vabags-endpoints }
+            - configMapRef: { name: vabags-public }      # KEYCLOAK_ISSUER (public iss)
+            - secretRef: { name: vabags-secrets }
+          startupProbe:                    # slow JVM boot on small shared nodes
+            httpGet: { path: /actuator/health/liveness, port: 8087 }
+            periodSeconds: 10
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8087 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8087 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ott-service
+spec:
+  selector: { app: ott-service }
+  ports:
+    - port: 8087
+      targetPort: 8087

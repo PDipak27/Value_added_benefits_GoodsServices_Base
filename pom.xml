@@ -10,18 +10,17 @@
     <packaging>pom</packaging>
     <name>VA-BAGS :: Parent</name>
 
+    <!-- ONE canonical parent for both editions (replaces the old pom.xml.bkp split).
+         Shared modules are always built; the service set is chosen by a property-activated
+         profile, so `-Pit` / `-Pe2e` never switch editions by accident:
+             mvn verify              → FULL edition (default: 8 services + e2e-tests)
+             mvn verify -Dlite       → LITE edition (api-gateway + 3 lite-* services + lite-e2e-tests)
+         Lite is a frozen, cost-optimized deploy variant — see Design/lite-* and
+         Design/12-full-flagship-plan.md. -->
     <modules>
         <module>shared-events</module>
         <module>shared-observability</module>
         <module>api-gateway</module>
-        <module>catalog-service</module>
-        <module>order-service</module>
-        <module>inventory-service</module>
-        <module>billing-service</module>
-        <module>fulfilment-service</module>
-        <module>notification-service</module>
-        <module>ott-service</module>
-        <module>e2e-tests</module>
     </modules>
 
     <properties>
@@ -37,6 +36,12 @@
              Spring Boot's dependency-management resolves flyway-core, flyway-database-postgresql,
              etc. against this property. -->
         <flyway.version>11.8.2</flyway.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
+
+        <!-- SonarQube: host + token are NEVER committed — CI injects -Dsonar.host.url / -Dsonar.token.
+             Lite pipelines override the key with -Dsonar.projectKey=vabags-lite. -->
+        <sonar.projectKey>vabags</sonar.projectKey>
+        <sonar.projectName>VA-BAGS</sonar.projectName>
     </properties>
 
     <dependencyManagement>
@@ -103,6 +108,15 @@
                 <artifactId>loki-logback-appender</artifactId>
                 <version>1.5.2</version>
             </dependency>
+            
+            <dependency>
+	            <groupId>org.testcontainers</groupId>
+	            <artifactId>testcontainers</artifactId>
+	            <version>${testcontainers.version}</version>
+ 	        <!--    <type>pom</type>
+	            <scope>import</scope>  -->
+        		</dependency>
+        
         </dependencies>
     </dependencyManagement>
 
@@ -111,6 +125,30 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ── Testcontainers (integration tests, *IT — run via -Pit) ─────────────
+             Versions come from the Spring Boot BOM's testcontainers-bom import.
+             Inherited by every module; services ship their *IT under -Pit. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -181,7 +219,118 @@
                 </plugin>
             </plugins>
         </pluginManagement>
+
+        <plugins>
+            <!-- JaCoCo: attach the coverage agent to the test JVMs, and emit
+                 target/site/jacoco/jacoco.xml at `verify` for SonarQube to consume.
+                 Surefire (unit) and failsafe (IT, via @{argLine}) both append to
+                 target/jacoco.exec, so the report is unit + integration coverage. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.12</version>
+                <executions>
+                    <execution>
+                        <id>jacoco-prepare-agent</id>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-report</id>
+                        <phase>verify</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Surefire runs the unit tests (*Test) and picks up JaCoCo's argLine
+                 automatically. Exclude the abstract Testcontainers base (its name matches
+                 *Test, but its static init would spin up Docker during the unit phase) and
+                 any *IT (failsafe owns those under -Pit). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <excludes>
+                        <exclude>**/Abstract*.java</exclude>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
     </build>
+
+    <profiles>
+        <!-- FULL edition (default) — active unless -Dlite is given. -->
+        <profile>
+            <id>full</id>
+            <activation>
+                <property><name>!lite</name></property>
+            </activation>
+            <modules>
+                <module>catalog-service</module>
+                <module>order-service</module>
+                <module>inventory-service</module>
+                <module>billing-service</module>
+                <module>fulfilment-service</module>
+                <module>notification-service</module>
+                <module>ott-service</module>
+                <module>e2e-tests</module>
+            </modules>
+        </profile>
+
+        <!-- LITE edition — mvn ... -Dlite -->
+        <profile>
+            <id>lite</id>
+            <activation>
+                <property><name>lite</name></property>
+            </activation>
+            <modules>
+                <module>lite-order-service</module>
+                <module>lite-inventory-service</module>
+                <module>lite-billing-service</module>
+                <module>lite-e2e-tests</module>
+            </modules>
+        </profile>
+
+        <!-- Integration tests (Testcontainers). Opt-in — they need a Docker daemon.
+             Runs classes named *IT via failsafe in the integration-test/verify phases:
+                 mvn -Pit verify            (full)   |   mvn -Pit verify -Dlite   (lite)
+             argLine pins the JVM timezone: pgjdbc otherwise sends legacy "Asia/Calcutta"
+             as `SET TimeZone`, which postgres:18 rejects. -->
+        <profile>
+            <id>it</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <version>3.2.5</version>
+                        <configuration>
+                            <includes>
+                                <include>**/*IT.java</include>
+                            </includes>
+                            <argLine>@{argLine} -Duser.timezone=Asia/Kolkata</argLine>
+                            <!-- Spring Boot's `repackage` turns the module's main artifact into a
+                                 fat jar (app classes nested under BOOT-INF/classes). Without this,
+                                 failsafe puts that fat jar on the test classpath and can't find the
+                                 module's own types → NoClassDefFoundError. Point it at the exploded
+                                 classes dir instead. -->
+                            <classesDirectory>${project.build.outputDirectory}</classesDirectory>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
     <repositories>
         <!-- Eventuate releases and snapshots -->

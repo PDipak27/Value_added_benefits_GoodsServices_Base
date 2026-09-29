@@ -1,0 +1,45 @@
+# Namespace + shared config for the VA-BAGS LITE pods (4 services).
+# Infra (Postgres + Kafka + eventuate-cdc) runs OUTSIDE the cluster via
+# docker-compose.lite.yml on the host; pods reach it over host.k3d.internal.
+#   Postgres → host 5433 (compose maps 5433→container 5432)
+#   Kafka    → host 9095 (the additive K8S listener, advertised host.k3d.internal:9095)
+# The ConfigMap is injected into every pod via envFrom; keys a service doesn't use are inert.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vabags-lite
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vabags-lite-endpoints
+  namespace: vabags-lite
+data:
+  # ── outside-the-cluster deps → host.k3d.internal ──────────────────────
+  SPRING_DATASOURCE_URL: jdbc:postgresql://host.k3d.internal:5433/vab
+  EVENTUATELOCAL_KAFKA_BOOTSTRAP_SERVERS: host.k3d.internal:9095
+  # ── DB connection budget (4 services, keep small) ─────────────────────
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "3"
+  SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "1"
+  # ── runtime knobs ─────────────────────────────────────────────────────
+  # logback's file appender defaults to a Windows host path; point it at a container-writable
+  # dir (non-root `spring` can't write /app). kubectl logs still uses stdout.
+  APP_LOG_DIR: /tmp
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"   # serve /actuator/health/liveness & /readiness
+  # ── IST timezone (Asia/Kolkata) ───────────────────────────────────────
+  # TZ = OS clock. JAVA_TOOL_OPTIONS pins -Duser.timezone (otherwise the JVM default
+  # resolves to legacy "Asia/Calcutta", which postgres:18 rejects on `SET TimeZone`).
+  # This env OVERRIDES the image's JAVA_TOOL_OPTIONS, so the tz flag is repeated here.
+  TZ: Asia/Kolkata
+  # §perf: cap heap+metaspace, SerialGC, C1-only JIT → faster startup under CPU contention.
+  JAVA_TOOL_OPTIONS: "-Duser.timezone=Asia/Kolkata -Xmx224m -XX:MaxMetaspaceSize=176m -XX:+UseSerialGC -XX:TieredStopAtLevel=1"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vabags-lite-db
+  namespace: vabags-lite
+type: Opaque
+stringData:                       # stringData = plaintext here; k8s base64-encodes it at rest
+  SPRING_DATASOURCE_USERNAME: eventuate
+  SPRING_DATASOURCE_PASSWORD: eventuate

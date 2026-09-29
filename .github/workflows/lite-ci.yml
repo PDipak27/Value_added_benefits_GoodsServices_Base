@@ -1,0 +1,94 @@
+# VA-BAGS Lite — CI/CD for GitHub-hosted runners.
+#
+# Mirrors the local pipeline (.github/workflows/local-ci.yml, run via act) but for the cloud:
+#   build + unit + integration tests (Testcontainers) → SonarQube → build 4 images → push registry
+# Differences from local-ci:
+#   • GitHub runners are fresh VMs → we DO need actions/checkout + setup-java (self-hosted/act didn't).
+#   • GitHub runners already have a Docker daemon → Testcontainers (*IT) run as-is.
+#   • Sonar can't reach your laptop's localhost:9000 — point it at SonarCloud or a hosted
+#     SonarQube via the SONAR_HOST_URL var + SONAR_TOKEN secret.
+#   • No k3d here. The active registry is Docker Hub (same as local). The AWS path — push to
+#     ECR + deploy to EKS + e2e — is documented in Design/lite-aws-eks-guide.md.
+#
+# Everything that needs credentials is GATED behind repo vars/secrets, so the workflow stays
+# green on PRs and forks that have none.
+name: lite-ci
+
+on:
+  push:
+    branches: [cicdLite, main]
+  pull_request:
+    branches: [cicdLite, main]
+  workflow_dispatch:
+
+# OIDC token permission is needed by the AWS path (assume-role); harmless otherwise.
+permissions:
+  id-token: write
+  contents: read
+env:
+  LITE_MODULES: api-gateway lite-order-service lite-inventory-service lite-billing-service
+  DOCKERHUB_NAMESPACE: ${{ secrets.DOCKERHUB_USERNAME }}
+  SONAR_PROJECT_KEY: vabags-lite
+  imagesExists: true
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      # 1) Build + unit + integration tests (Testcontainers PG + Kafka). The `it` profile's
+      #    failsafe argLine pins -Duser.timezone=Asia/Kolkata (postgres:18 rejects Asia/Calcutta).
+      - name: Build + integration tests (Testcontainers)
+        run: |
+          mvn -B -ntp -Dlite -Pit \
+            -pl api-gateway,lite-order-service,lite-inventory-service,lite-billing-service -am \
+            verify
+
+      # 2) SonarQube — reuses the compiled target/ from step 1. Gated so it only runs once
+      #    a Sonar server is configured. Set repo var ENABLE_SONAR=true, var SONAR_HOST_URL
+      #    (e.g. https://sonarcloud.io) and secret SONAR_TOKEN.
+      - name: SonarQube analysis
+        if: vars.ENABLE_SONAR == 'true'
+        run: |
+          mvn -B -ntp -Dlite sonar:sonar \
+            -Dsonar.host.url="${{ vars.SONAR_HOST_URL }}" \
+            -Dsonar.token="$SONAR_TOKEN" \
+            -Dsonar.projectKey="$SONAR_PROJECT_KEY"
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # 3) Build the 4 Lite images (jars from step 1 are already in each module's target/).
+      - name: Build Lite images
+        run: |
+          SHA="${GITHUB_SHA::7}"
+          for s in $LITE_MODULES; do
+            docker build -f Dockerfile.lite --build-arg MODULE="$s" \
+              -t "$DOCKERHUB_NAMESPACE/$s:$SHA" -t "$DOCKERHUB_NAMESPACE/$s:latest" .
+          done
+
+      # 4) Push to Docker Hub. Gated: only on branch pushes (not PRs) once creds are set.
+      #    Repo var ENABLE_DOCKERHUB_PUSH=true; secrets DOCKERHUB_USERNAME + DOCKERHUB_TOKEN.
+      - name: Push to Docker Hub
+        if: github.event_name != 'pull_request' && vars.ENABLE_DOCKERHUB_PUSH == 'true'
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "$DOCKERHUB_NAMESPACE" --password-stdin
+          SHA="${GITHUB_SHA::7}"
+          for s in $LITE_MODULES; do
+            docker push "$DOCKERHUB_NAMESPACE/$s:$SHA"
+            docker push "$DOCKERHUB_NAMESPACE/$s:latest"
+          done
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AWS PATH (ECR push + EKS deploy + happy-path e2e) — the cloud equivalent of local-ci's
+# k3d + e2e — is documented with runnable commands and the full CloudFormation / VPC / IAM /
+# autoscaling internals in:  Design/lite-aws-eks-guide.md
+# The runnable AWS pipeline is a separate workflow: .github/workflows/aws-lite-ci.yml
+# (manual / workflow_dispatch). It needs secret AWS_ROLE_ARN and repo vars AWS_REGION,
+# EKS_CLUSTER_NAME. See the guide for the full CloudFormation / VPC / IAM / autoscaling story.
+# ─────────────────────────────────────────────────────────────────────────────

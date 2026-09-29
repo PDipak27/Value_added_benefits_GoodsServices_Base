@@ -13,6 +13,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.util.StringUtils;
 
 /**
  * Two security filter chains:
@@ -58,12 +59,21 @@ public class SecurityConfig {
      * JWT decoder validating signature + issuer + expiry (defaults) <em>and</em> the
      * required audience (§A-1 hardening) — rejecting tokens not minted for this
      * resource server even if signed by the same realm.
+     *
+     * <p>Split-horizon Keycloak (EKS): when {@code jwk-set-uri} is set, keys are fetched
+     * from that (in-cluster) URL and the {@code issuer-uri} (public hostname) is only
+     * compared against the {@code iss} claim — no OIDC discovery through the public load
+     * balancer, and no boot-time dependency on Keycloak. Without it (laptop), the decoder
+     * discovers the JWKS from the issuer as before.
      */
     @Bean
     JwtDecoder jwtDecoder(
             @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}") String issuer,
+            @Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri:}") String jwkSetUri,
             @Value("${ott.required-audience:ott-service}") String audience) {
-        NimbusJwtDecoder decoder = NimbusJwtDecoder.withIssuerLocation(issuer).build();
+        NimbusJwtDecoder decoder = StringUtils.hasText(jwkSetUri)
+                ? NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build()
+                : NimbusJwtDecoder.withIssuerLocation(issuer).build();
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefaultWithIssuer(issuer),
                 new AudienceValidator(audience)));

@@ -87,3 +87,31 @@ management:
     tracing:
       export:
         enabled: true
+
+---
+# Split-horizon Keycloak on EKS (Design/12 §5). Keycloak is reachable two ways:
+#   public   KEYCLOAK_PUBLIC_URL   (https NLB, self-signed) — what the BROWSER uses; also the `iss`
+#   internal KEYCLOAK_INTERNAL_URL (http://keycloak:8080)   — what PODS use (token/JWKS/userinfo)
+# Boot's client mapper always runs OIDC discovery when a provider has issuer-uri, which would go
+# through the public, self-signed endpoint. So the login client switches to a provider with explicit
+# endpoints (no issuer-uri → id-token `iss` is not re-checked; signature/aud/exp still are).
+spring:
+  config:
+    activate:
+      on-profile: eks
+  security:
+    oauth2:
+      client:
+        registration:
+          keycloak:
+            provider: keycloak-split
+        provider:
+          keycloak-split:
+            authorization-uri: ${KEYCLOAK_PUBLIC_URL}/realms/vab/protocol/openid-connect/auth
+            token-uri: ${KEYCLOAK_INTERNAL_URL}/realms/vab/protocol/openid-connect/token
+            jwk-set-uri: ${KEYCLOAK_INTERNAL_URL}/realms/vab/protocol/openid-connect/certs
+            user-info-uri: ${KEYCLOAK_INTERNAL_URL}/realms/vab/protocol/openid-connect/userinfo
+            user-name-attribute: sub
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${KEYCLOAK_INTERNAL_URL}/realms/vab/protocol/openid-connect/certs

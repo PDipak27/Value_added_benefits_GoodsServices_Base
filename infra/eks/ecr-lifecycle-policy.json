@@ -1,0 +1,10 @@
+{
+  "rules": [
+    {
+      "rulePriority": 1,
+      "description": "Keep only the 10 most recent images per repository",
+      "selection": { "tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 10 },
+      "action": { "type": "expire" }
+    }
+  ]
+}

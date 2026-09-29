@@ -1,0 +1,230 @@
+// VA-BAGS FULL edition — CI + CD pipeline (Jenkins declarative, multibranch-friendly).
+//
+//   Checkout
+//    -> Build + Unit + IT (mvn -Pit verify)          // Testcontainers; JaCoCo unit+IT per module
+//    -> SonarQube analysis -> Quality Gate           // gate FAILS the build before anything ships
+//    -> Build 8 images (Dockerfile) -> [Trivy scan]  // Trivy only if installed on the agent
+//    -> Push to ECR (git-sha tag)                    // EC2 instance-profile role (IMDS), no stored keys
+//    -> [manual approval]                            // CD only from main (or DEPLOY_ANY_BRANCH)
+//    -> Deploy to EKS (k8s-full/scripts/deploy.sh)   // public NLBs -> secrets/TLS -> realm -> apply -> wait
+//    -> Smoke e2e (gateway auth + happy path)        // against the public NLB URLs
+//    -> on failure after deploy: rollout undo
+//
+// Differences from the Lite pipelines (jenkins/Jenkinsfile.cicd):
+//   • full reactor (no -Dlite), 8 services; Sonar key `vabags`
+//   • OIDC is ON — e2e mints Keycloak tokens; deploy.sh wires split-horizon Keycloak
+//   • TLS on AWS-provided hostnames: self-signed, terminated by gateway/Keycloak (NLB passthrough)
+//
+// One-time setup: see Design/12-full-flagship-plan.md §6 (tools jdk17/maven3, 'sonarqube' server,
+// Jenkins role policy jenkins/jenkins-full-policy.json, EKS access entry via infra/eks).
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    timeout(time: 90, unit: 'MINUTES')          // incl. first Keycloak boot + approval wait
+  }
+
+  tools {
+    jdk   'jdk17'
+    maven 'maven3'
+  }
+
+  parameters {
+    booleanParam(name: 'RUN_IT',            defaultValue: true,  description: 'Run Testcontainers integration tests (-Pit)')
+    booleanParam(name: 'RUN_SONAR',         defaultValue: true,  description: 'SonarQube analysis + quality gate')
+    booleanParam(name: 'DEPLOY',            defaultValue: true,  description: 'Push to ECR and deploy to EKS')
+    booleanParam(name: 'DEPLOY_ANY_BRANCH', defaultValue: false, description: 'Allow CD from a non-main branch')
+    booleanParam(name: 'RUN_E2E',           defaultValue: true,  description: 'Smoke e2e after deploy')
+    string(name: 'AWS_REGION',       defaultValue: 'ap-south-1',  description: 'AWS region')
+    string(name: 'EKS_CLUSTER_NAME', defaultValue: 'vabags-full', description: 'EKS cluster name')
+  }
+
+  environment {
+    SERVICES          = 'api-gateway order-service inventory-service billing-service notification-service catalog-service fulfilment-service ott-service'
+    K8S_NAMESPACE     = 'vabags'
+    SONAR_PROJECT_KEY = 'vabags'
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+        script {
+          env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+          def branch  = env.BRANCH_NAME ?: sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
+          env.IS_DEPLOY_BRANCH = (branch == 'main' || params.DEPLOY_ANY_BRANCH) ? 'true' : 'false'
+          echo "commit ${env.GIT_SHA} on ${branch} (deploy branch: ${env.IS_DEPLOY_BRANCH})"
+        }
+      }
+    }
+
+    // Surefire (unit) + failsafe (IT, -Pit) feed one JaCoCo exec per module -> jacoco.xml at `verify`.
+    // The `it` profile pins -Duser.timezone=Asia/Kolkata (postgres:18 rejects Asia/Calcutta).
+    stage('Build + Unit + IT') {
+      steps {
+        sh """
+          mvn -B -ntp ${params.RUN_IT ? '-Pit' : ''} verify
+        """
+      }
+      post {
+        always {
+          junit testResults: '**/target/surefire-reports/*.xml, **/target/failsafe-reports/*.xml',
+                allowEmptyResults: true
+          archiveArtifacts artifacts: '**/target/site/jacoco/jacoco.xml', allowEmptyArchive: true
+        }
+      }
+    }
+
+    // withSonarQubeEnv injects SONAR_HOST_URL + SONAR_AUTH_TOKEN (nothing is committed in the pom).
+    stage('SonarQube analysis') {
+      when { expression { params.RUN_SONAR } }
+      steps {
+        withSonarQubeEnv('sonarqube') {
+          sh '''
+            mvn -B -ntp sonar:sonar \
+              -Dsonar.host.url="$SONAR_HOST_URL" \
+              -Dsonar.token="$SONAR_AUTH_TOKEN" \
+              -Dsonar.projectKey="$SONAR_PROJECT_KEY"
+          '''
+        }
+      }
+    }
+
+    // Blocks until SonarQube's webhook reports back; aborts the build if the gate != OK.
+    stage('Quality Gate') {
+      when { expression { params.RUN_SONAR } }
+      steps {
+        timeout(time: 10, unit: 'MINUTES') {
+          waitForQualityGate abortPipeline: true
+        }
+      }
+    }
+
+    stage('Build images') {
+      when { expression { params.DEPLOY && env.IS_DEPLOY_BRANCH == 'true' } }
+      steps {
+        sh '''
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+          echo "REGISTRY=$REGISTRY" > registry.env
+          for s in $SERVICES; do
+            docker build -f Dockerfile --build-arg MODULE="$s" -t "$REGISTRY/vabags/$s:$GIT_SHA" .
+          done
+        '''
+      }
+    }
+
+    // Optional image scan: fails on CRITICAL vulns with a fix available. Skipped (not failed) if
+    // trivy isn't on the agent — ECR's scan-on-push (infra/eks/create-cluster.sh) is the fallback.
+    stage('Trivy scan') {
+      when { expression { params.DEPLOY && env.IS_DEPLOY_BRANCH == 'true' } }
+      steps {
+        sh '''
+          . ./registry.env
+          if ! command -v trivy >/dev/null 2>&1; then echo "trivy not installed — skipping"; exit 0; fi
+          for s in $SERVICES; do
+            trivy image --quiet --severity CRITICAL --ignore-unfixed --exit-code 1 "$REGISTRY/vabags/$s:$GIT_SHA"
+          done
+        '''
+      }
+    }
+
+    // Immutable, per-commit tags only — deployments never reference :latest.
+    stage('Push to ECR') {
+      when { expression { params.DEPLOY && env.IS_DEPLOY_BRANCH == 'true' } }
+      steps {
+        sh '''
+          . ./registry.env
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+          for s in $SERVICES; do
+            aws ecr describe-repositories --repository-names "vabags/$s" --region "$AWS_REGION" >/dev/null 2>&1 \
+              || aws ecr create-repository --repository-name "vabags/$s" --region "$AWS_REGION" \
+                   --image-scanning-configuration scanOnPush=true >/dev/null
+            docker push "$REGISTRY/vabags/$s:$GIT_SHA"
+          done
+        '''
+      }
+    }
+
+    stage('Approve EKS deploy') {
+      when { expression { params.DEPLOY && env.IS_DEPLOY_BRANCH == 'true' } }
+      steps {
+        timeout(time: 30, unit: 'MINUTES') {
+          input message: "Deploy ${env.GIT_SHA} to EKS cluster ${params.EKS_CLUSTER_NAME}?", ok: 'Deploy'
+        }
+      }
+    }
+
+    stage('Deploy to EKS') {
+      when { expression { params.DEPLOY && env.IS_DEPLOY_BRANCH == 'true' } }
+      steps {
+        sh '''
+          . ./registry.env
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          # Remember what was running, for rollback.
+          for s in $SERVICES; do
+            kubectl -n "$K8S_NAMESPACE" get deploy "$s" >/dev/null 2>&1 && echo "$s" >> deployed-before.txt || true
+          done
+          REGISTRY="$REGISTRY" TAG="$GIT_SHA" NS="$K8S_NAMESPACE" AWS_REGION="$AWS_REGION" \
+            bash k8s-full/scripts/deploy.sh
+        '''
+      }
+      post {
+        failure { script { rollback() } }
+      }
+    }
+
+    // Smoke set: gateway auth matrix + PAY_NOW happy paths, through the PUBLIC NLBs (self-signed TLS;
+    // E2EBase uses relaxed HTTPS). order-service isn't public, so its health check is port-forwarded.
+    stage('Smoke e2e') {
+      when { expression { params.DEPLOY && params.RUN_E2E && env.IS_DEPLOY_BRANCH == 'true' } }
+      steps {
+        sh '''
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          GW=$(kubectl -n "$K8S_NAMESPACE" get cm vabags-public -o jsonpath='{.data.GATEWAY_PUBLIC_URL}')
+          KC=$(kubectl -n "$K8S_NAMESPACE" get cm vabags-public -o jsonpath='{.data.KEYCLOAK_PUBLIC_URL}')
+          KC_PW=$(kubectl -n "$K8S_NAMESPACE" get secret vabags-secrets -o jsonpath='{.data.KC_ADMIN_PASSWORD}' | base64 -d)
+          kubectl -n "$K8S_NAMESPACE" port-forward svc/order-service 8081:8081 >pf-order.log 2>&1 &
+          sleep 8
+          mvn -B -ntp -pl e2e-tests -Pe2e test \
+            -Dtest='GatewayAuthE2E,OrderHappyPathE2E' -Dsurefire.failIfNoSpecifiedTests=false \
+            -Dvab.gateway.url="$GW" -Dvab.keycloak.url="$KC" -Dvab.order.url=http://localhost:8081 \
+            -Dvab.keycloak.admin.user=admin -Dvab.keycloak.admin.password="$KC_PW"
+        '''
+      }
+      post {
+        always { junit testResults: 'e2e-tests/target/surefire-reports/*.xml', allowEmptyResults: true }
+        failure { script { rollback() } }
+      }
+    }
+  }
+
+  post {
+    success {
+      script {
+        if (params.DEPLOY && env.IS_DEPLOY_BRANCH == 'true') {
+          sh 'kubectl -n "$K8S_NAMESPACE" get cm vabags-public -o jsonpath=\'{.data}\' || true'
+        }
+      }
+    }
+    always {
+      sh 'pkill -f "kubectl.*port-forward" || true; docker logout || true'
+      cleanWs()
+    }
+  }
+}
+
+// Roll every service that existed before this run back to its previous ReplicaSet.
+// (A first-ever deploy has nothing to roll back to — the failure simply stands.)
+def rollback() {
+  sh '''
+    [ -f deployed-before.txt ] || { echo "first deploy — nothing to roll back"; exit 0; }
+    while read -r s; do
+      echo "rollback deploy/$s"
+      kubectl -n "$K8S_NAMESPACE" rollout undo "deploy/$s" || true
+    done < deployed-before.txt
+  '''
+}

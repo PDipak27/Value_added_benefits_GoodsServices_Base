@@ -149,16 +149,8 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Apicurio Schema Registry (in-memory, dev only) ────────────────────────
-  apicurio:
-    image: apicurio/apicurio-registry-mem:latest-release
-    container_name: vab-apicurio
-    ports:
-      - "8090:8080"
-    environment:
-      QUARKUS_PROFILE: dev
-      JAVA_TOOL_OPTIONS: "-Xmx192m"          # §perf lever-2: cap Apicurio (Quarkus) heap
-      TZ: Asia/Kolkata
+  # Apicurio schema registry removed (C3 decision, 2026-09-25): it ran but no event was ever
+  # registered — events are plain Tram POJOs via JSonMapper. See Design/10 §C3.
 
   # ── Keycloak — OIDC Provider (DD-29 / §A-1), Postgres-backed ──────────────
   # The OpenID Provider for federated auth. Phase A-1 ships only the

@@ -1,0 +1,85 @@
+server:
+  port: 8081
+  shutdown: graceful
+
+spring:
+  application:
+    name: lite-order-service
+
+  # LITE: no OAuth2/Keycloak resource-server — auth is disabled (see Design/lite-cutlist.md).
+
+  # ── Postgres (write side: order state + Tram outbox + idempotency) ──────
+  datasource:
+    url: jdbc:postgresql://localhost:5433/vab
+    username: eventuate
+    password: eventuate
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: orders
+
+  flyway:
+    enabled: true
+    schemas: orders
+    locations:             #flyway auto adds locations.
+    - classpath:db/migration
+#    - classpath:flyway/postgresql
+
+# LITE: MongoDB read side and catalog-service client removed (see Design/lite-cutlist.md).
+
+# ── Eventuate Tram — outbox + dedup tables live in the 'eventuate' schema ──
+eventuate:
+  database:
+    schema: eventuate
+
+# ── Eventuate Tram / Kafka ─────────────────────────────────────────────────
+eventuatelocal:
+  kafka:
+    bootstrap:
+      servers: localhost:9094
+  # zookeeper.connection.string intentionally omitted — KRaft mode, not needed
+
+# ── Actuator ───────────────────────────────────────────────────────────────
+management:
+  # §perf: default OFF (0.0) — the traceId is still generated & propagated (so it shows in file/console
+  # logs), but nothing is recorded or exported, so Tempo isn't needed. The `obs` profile flips it to 1.0.
+  tracing:
+    sampling:
+      probability: 0.0
+  # §perf: no span export unless `obs` is active — old sampled traceparents on Kafka messages
+  # would otherwise force export attempts at Tempo (parent-based sampler honours them).
+  otlp:
+    tracing:
+      export:
+        enabled: false
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.vab: DEBUG
+    io.eventuate: INFO
+
+---
+# §perf: `obs` profile — record + export every trace to Tempo (pair with COMPOSE_PROFILES=obs).
+spring:
+  config:
+    activate:
+      on-profile: obs
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      export:
+        enabled: true

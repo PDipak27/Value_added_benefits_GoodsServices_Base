@@ -1,0 +1,49 @@
+# Billing — saga participant (authorize / capture = pivot / refund / BTM ledger).
+# Image is the bare name `vabags/billing-service`; deploy.sh rewrites it to <ECR>/vabags/billing-service:<git-sha>.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: billing-service }
+  template:
+    metadata:
+      labels: { app: billing-service }
+    spec:
+      containers:
+        - name: billing-service
+          image: vabags/billing-service
+          ports:
+            - containerPort: 8083
+          envFrom:
+            - configMapRef: { name: vabags-endpoints }
+            - secretRef: { name: vabags-secrets }
+          startupProbe:                    # slow JVM boot on small shared nodes
+            httpGet: { path: /actuator/health/liveness, port: 8083 }
+            periodSeconds: 10
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8083 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8083 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-service
+spec:
+  selector: { app: billing-service }
+  ports:
+    - port: 8083
+      targetPort: 8083
