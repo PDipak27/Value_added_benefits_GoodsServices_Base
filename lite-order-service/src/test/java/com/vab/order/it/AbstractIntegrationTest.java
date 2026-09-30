@@ -11,7 +11,7 @@ import org.testcontainers.utility.MountableFile;
 
 /**
  * Shared Testcontainers infra for the Lite integration tests: a real Postgres 18
- * and a real Kafka. Postgres is pre-seeded with the eventuate ES/Tram + saga schema
+ * and a real Kafka. Postgres is pre-seeded with the eventuate Tram + saga schema
  * via the SAME init SQL the compose uses — the services' own Flyway only manages the
  * orders/inventory/billing schemas, not the eventuate one. Containers are static
  * singletons: started once, reused across every {@code *IT} in the module.

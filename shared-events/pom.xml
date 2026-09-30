@@ -14,8 +14,7 @@
 
     <dependencies>
         <!-- io.eventuate.tram.events.common.DomainEvent — Order domain events
-             (OrderPlaced/Confirmed/Failed) published via the Tram outbox.
-             Post-DD-14: no Eventuate Local ES, so no io.eventuate.Event. -->
+             (OrderPlaced/Confirmed/Failed) published via the Tram outbox. -->
 		<dependency>
 			<groupId>io.eventuate.tram.core</groupId>
 			<artifactId>eventuate-tram-events</artifactId>

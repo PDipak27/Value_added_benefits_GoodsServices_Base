@@ -177,7 +177,7 @@ Mixing network and business retry is the #1 way Saga implementations corrupt sta
 |---|---|---|
 | Participant timeout | Step timeout fires | Retry per policy → compensate if exhausted |
 | Kafka redelivery of command | `(sagaId, stepId)` lookup in `processed_messages` | Return prior result; no-op |
-| Saga orchestrator crash | Last appended event in ES | On restart, replay aggregate → orchestrator resumes, re-issues outstanding command (participant dedupes) |
+| Saga orchestrator crash | Saga state persisted in `eventuate.saga_instance` (same transaction as each step's outbox write) | On restart, the saga manager reloads the instance when the pending reply arrives and continues; the outstanding command is already in the outbox, so nothing is lost (participants dedupe redeliveries) |
 | Third-party (OTT) 5xx storm | `retryable=true` repeated failures | Circuit breaker on REST adapter → fail fast → compensate |
 | Inventory race (two orders, one seat) | `InventoryReservationFailed` from participant | Saga compensates, order fails |
 | Entitlement duplicate (projection lag) | OTT provisioning returns `409` | Non-retryable → compensate |

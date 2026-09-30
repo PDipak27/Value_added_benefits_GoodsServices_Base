@@ -6,15 +6,15 @@
 |---|---|---|
 | Language / runtime | Java 17, Spring Boot 3.4.0 | Eventuate BOM targets 3.4.0; JDK 17 used (no JDK 21 installed locally) |
 | Build | **Maven** (multi-module) | User preference |
-| Order write model | **State-stored JPA aggregate + Eventuate Tram outbox** (`DomainEventPublisher`) | Order is persisted as a normal row; domain events are written to the Tram `message` outbox in the *same* transaction and relayed to Kafka. The aggregate is **not** event-sourced — see DD-14. |
+| Order write model | **State-stored JPA aggregate + Eventuate Tram outbox** (`DomainEventPublisher`) | Order is persisted as a normal row; domain events are written to the Tram `message` outbox in the *same* transaction and relayed to Kafka. Why state-stored rather than event-sourced: DD-14. |
 | Saga | **Eventuate Tram Sagas** (`eventuate-tram-sagas-spring-orchestration-simple-dsl-starter`) | Orchestration DSL; layered on Tram messaging |
-| Outbox → broker | **Eventuate CDC in Polling mode** (`SPRING_PROFILES_ACTIVE=EventuatePolling,Kafka`) — a single `trampipeline` reader polling the Tram `eventuate.message` outbox. | One CDC service relays both the Order domain events and the Inventory/Billing saga command/reply traffic (all flow through the Tram outbox). With ES removed, the former `localpipeline` (Local ES `eventuate.events`) is retired — fewer moving parts. No wal2json, no logical replication slot — simpler dev on Windows + Postgres 18. Trade-off: slightly higher publish latency vs WAL tailing — irrelevant at ~50 TPS. |
+| Outbox → broker | **Eventuate CDC in Polling mode** (`SPRING_PROFILES_ACTIVE=EventuatePolling,Kafka`) — a single `trampipeline` reader polling the Tram `eventuate.message` outbox. | One CDC service relays both the Order domain events and the Inventory/Billing saga command/reply traffic (all flow through the Tram outbox). One reader, one pipeline — few moving parts. No wal2json, no logical replication slot — simpler dev on Windows + Postgres 18. Trade-off: slightly higher publish latency vs WAL tailing — irrelevant at ~50 TPS. |
 | Broker | **Apache Kafka** via `apache/kafka:3.7.1` in **KRaft mode** | Kafka itself needs no ZooKeeper (KRaft handles broker/controller quorum). Retained as the durable **event log** (replay, analytics, recsys) — a strategic asset, not a scaling device. |
 | CDC leader election | **ZooKeeper** (`confluentinc/cp-zookeeper:7.7.1`) on `:2181` | Eventuate CDC uses a ZK lock (`/eventuate/cdc/leader/tram`) to coordinate CDC replicas — required by the framework even with a single instance, and what makes a **multi-instance (HA) CDC** deployment safe. Independent of Kafka's KRaft quorum. |
 | Write store | **PostgreSQL 18** (locally installed, not containerised) — Order write side only (order state + Tram outbox + saga + idempotency) | User preference; CDC connects via `host.docker.internal` |
 | Read / document store | **MongoDB 7** — Order read-model projections **and** the Catalog store (DD-16) | Document model suits denormalized order projections; also fits polymorphic, often-changing offer documents (Catalog is its own `vab_catalog` database) |
 | Catalog read-cache | **Caffeine L1 (in-process) + Redis 7 L2 (shared)** — two-tier (DD-17 / DD-18 / DD-19 / DD-20) | Read-heavy, write-rare catalog; L1 avoids re-deserializing ~5000 offers per browse, L2 backstops L1 misses. Invalidation is local evict-on-write + a Redis pub/sub broadcast that clears peer L1s (skip-self, DD-19); 15s TTL on both tiers is the backstop (not event-driven — writer and cache are the same service). **Fail-open:** a Redis outage degrades reads/writes to Mongo, never an error — `CacheErrorHandler` logs + swallows, 500ms Redis timeouts (DD-20) |
-| Schema registry | **Apicurio** (OSS, in-memory for dev) | Same REST API as Confluent SR; zero license cost |
+| Schema registry | **None** — versioned DTOs in `shared-events` (DD-13) | One repo, one build: the compiler enforces the contract; additive-only evolution. Apicurio evaluated and removed |
 | OIDC Provider | **Self-hosted Keycloak** (DD-29) — own container + DB, `vab` realm via import | Full open-source IdP (realms, user mgmt + registration, login UI, credential flows, admin console); the gateway is a resource server, not the OP |
 | Observability | OTel → Loki + Grafana | Existing repo wiring |
 | Tracing | W3C `traceparent` in HTTP headers + Kafka message headers | Traces cross sync + async hops |
@@ -33,19 +33,19 @@
 | `io.eventuate.tram.sagas:eventuate-tram-sagas-spring-participant` | managed by BOM |
 | `eventuateio/eventuate-cdc-service` (Docker) | `0.19.0.RELEASE` |
 
-**Redesign (DD-14):** the two `io.eventuate.local.java:eventuate-local-java-spring-{jdbc,events}-starter` artifacts are **dropped** — the write side no longer event-sources. Domain events are published/consumed via `eventuate-tram-spring-events` (`DomainEventPublisher` on the write side, `DomainEventHandlers` in the projector).
+**Not used (DD-14):** the Eventuate Local event-sourcing starters (`io.eventuate.local.java:eventuate-local-java-spring-*`). Domain events are published/consumed via `eventuate-tram-spring-events` (`DomainEventPublisher` on the write side, `DomainEventHandlers` in the projector).
 
 **Key rule:** never declare Eventuate artifact versions explicitly. Always let the BOM manage them. Mixing versions manually is the #1 source of classpath conflicts.
 
 ---
 
-## Why Eventuate Tram only (no Local ES)
+## Why Eventuate Tram only
 
 Eventuate has two distinct layers:
 - **Tram** — messaging, transactional outbox, saga participant/orchestrator, and `DomainEventPublisher` for publishing domain events atomically with a JDBC write. No event sourcing.
-- **Eventuate Local ES** — full event-sourced aggregates (`ReflectiveMutableCommandProcessingAggregate`). Sits on top of Tram.
+- **Eventuate Local** — event-sourced aggregates (`ReflectiveMutableCommandProcessingAggregate`). Sits on top of Tram; not used here.
 
-**All services now use Tram only.** The Order aggregate is state-stored (a JPA entity) and emits domain events through the Tram outbox; Inventory and Billing are Tram saga participants. This keeps "events on Kafka" (the strategic asset) without paying the event-sourcing tax — see DD-14 for the reasoning. The decisive insight: *publishing domain events* and *event-sourcing the aggregate* are independent choices, and at ~50 TPS only the former earns its keep.
+**All services use Tram only.** The Order aggregate is state-stored (a JPA entity) and emits domain events through the Tram outbox; Inventory and Billing are Tram saga participants. This keeps "events on Kafka" (the strategic asset) without paying the event-sourcing tax — see DD-14 for the reasoning. The decisive insight: *publishing domain events* and *event-sourcing the aggregate* are independent choices, and at ~50 TPS only the former earns its keep.
 
 ---
 
@@ -57,7 +57,7 @@ VA-BAGS/
 └── source/
     └── vabags_base/                  (Maven root; cd here for all build/run commands)
         ├── pom.xml                   (parent BOM + Maven multi-module)
-        ├── docker-compose.yml        (Kafka KRaft + CDC + MongoDB + Apicurio)
+        ├── docker-compose.yml        (Kafka KRaft + CDC + MongoDB + Redis + Keycloak)
         │
         ├── shared-events/            (versioned event POJOs + Saga commands/replies)
         │
@@ -104,16 +104,15 @@ VA-BAGS/
 |---|---|---|---|
 | `vab-kafka` | `apache/kafka:3.7.1` | 9092 | Broker (KRaft — no ZK quorum) |
 | `vab-zk` | `confluentinc/cp-zookeeper:7.7.1` | 2181 | CDC leader-election lock store (not used by Kafka) |
-| `vab-cdc` | `eventuateio/eventuate-cdc-service:0.19.0.RELEASE` | 8080 | Polling reader → Kafka publisher (two pipelines: Local ES + Tram) |
+| `vab-cdc` | `eventuateio/eventuate-cdc-service:0.19.0.RELEASE` | 8080 | Polling reader → Kafka publisher (single Tram outbox pipeline) |
 | `vab-mongo` | `mongo:7` | 27017 | Read projections + catalog store |
 | `vab-redis` | `redis:7-alpine` | 6379 | Catalog read-cache (DD-17) |
-| `vab-apicurio` | `apicurio/apicurio-registry-mem:latest-release` | 8090 | Schema registry (container :8080 mapped to host :8090 to avoid collision with CDC) |
 
 Postgres runs locally — CDC connects via `host.docker.internal:5432`.
 
 `depends_on` chain: CDC waits for both `kafka` (publish target) and `zookeeper` (leader lock) to be healthy before starting. All containers carry healthchecks; CDC's check hits `localhost:8080/actuator/health` (Spring Boot Actuator).
 
-> **Operational gotcha (read-side silently empty).** Because CDC is gated on `service_healthy`, if Kafka/ZK miss their healthcheck window on a cold start, Compose leaves CDC in `Created` and never starts it. The write side still works (aggregate + saga rows are JDBC writes), so it *looks* healthy — but nothing is published to Kafka, so the projector never fires and the Mongo read model stays empty (no `vab` DB). Healthcheck `timeout`/`start_period`/`retries` are sized generously to avoid this, and CDC runs `-Xmx512m` (a starved heap makes its boot exceed the health window). If you ever see `vab-cdc` in `Created`/down with an empty read model, `docker start vab-cdc` flushes the `published=0` backlog from `eventuate.events`.
+> **Operational gotcha (read-side silently empty).** Because CDC is gated on `service_healthy`, if Kafka/ZK miss their healthcheck window on a cold start, Compose leaves CDC in `Created` and never starts it. The write side still works (aggregate + saga rows are JDBC writes), so it *looks* healthy — but nothing is published to Kafka, so the projector never fires and the Mongo read model stays empty (no `vab` DB). Healthcheck `timeout`/`start_period`/`retries` are sized generously to avoid this, and CDC runs `-Xmx512m` (a starved heap makes its boot exceed the health window). If you ever see `vab-cdc` in `Created`/down with an empty read model, `docker start vab-cdc` flushes the `published=0` backlog from the `eventuate.message` outbox.
 
 ---
 

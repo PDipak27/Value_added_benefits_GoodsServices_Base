@@ -1,27 +1,18 @@
 package com.vab.order;
 
 import com.vab.events.common.EventuateJackson;
-import com.vab.order.query.projection.OrderProjector;
-import com.vab.order.query.projection.OrderSearchProjector;
-import io.eventuate.tram.events.subscriber.DomainEventDispatcher;
-import io.eventuate.tram.events.subscriber.DomainEventDispatcherFactory;
-import io.eventuate.tram.spring.events.publisher.TramEventsPublisherConfiguration;
-import io.eventuate.tram.spring.events.subscriber.TramEventSubscriberConfiguration;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
 
 /**
- * Order service entry point (post-DD-14).
+ * Order service entry point.
  *
  * <p>The Tram saga-orchestration starter auto-configures the JDBC/Kafka message
- * transport. We additionally import the Tram domain-event publisher and
- * subscriber configurations so the state-stored write side can publish domain
- * events through the outbox and the projector can consume them.
+ * transport. Domain-event publishing and the projector dispatchers live in
+ * {@link com.vab.order.config.DomainEventsConfig} — deliberately not on this class,
+ * so test slices such as {@code @DataJpaTest} don't inherit them.
  */
 @SpringBootApplication
-@Import({TramEventsPublisherConfiguration.class, TramEventSubscriberConfiguration.class})
 public class OrderServiceApplication {
 
     public static void main(String[] args) {
@@ -30,29 +21,5 @@ public class OrderServiceApplication {
         // JavaTimeModule on Eventuate's JSonMapper before any reply is deserialized.
         EventuateJackson.register();
         SpringApplication.run(OrderServiceApplication.class, args);
-    }
-
-    /**
-     * Registers the read-model projector as a Tram domain-event dispatcher.
-     * The dispatcher id ("orderServiceProjector") is the Kafka consumer group.
-     */
-    @Bean
-    public DomainEventDispatcher orderDomainEventDispatcher(
-            OrderProjector projector,
-            DomainEventDispatcherFactory factory) {
-        return factory.make("orderServiceProjector", projector.domainEventHandlers());
-    }
-
-    /**
-     * Ops-search projector as a second, independent Tram domain-event dispatcher
-     * (§B3). Its own dispatcher id ("orderSearchProjector") is a distinct Kafka
-     * consumer group, so order_search_v1 is built from the same event stream as
-     * orders_v1 but consumed and rebuildable independently.
-     */
-    @Bean
-    public DomainEventDispatcher orderSearchDomainEventDispatcher(
-            OrderSearchProjector projector,
-            DomainEventDispatcherFactory factory) {
-        return factory.make("orderSearchProjector", projector.domainEventHandlers());
     }
 }

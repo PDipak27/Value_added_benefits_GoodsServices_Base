@@ -6,3 +6,4 @@
 *.jks
 !.gitignore
 !README.md
+keystore-password

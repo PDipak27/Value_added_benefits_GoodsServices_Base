@@ -90,10 +90,10 @@ docker compose -f docker-compose.lite.yml down          # add -v to wipe the pg 
 ### `ERROR: relation "eventuate.saga_instance" does not exist` (order-service, on first saga)
 The `eventuate` schema is created entirely by the DB-init SQL — nothing auto-runs the
 eventuate flyway scripts, and each service's own Flyway only manages its own schema
-(orders/inventory/billing). `01-eventuate-schema.sql` seeds the 7 ES + Tram messaging
+(orders/inventory/billing). `01-eventuate-schema.sql` seeds the 4 Tram outbox/messaging
 tables but **not** the 4 saga tables; `04-tram-saga-schema.sql` adds them (DDL copied
-from `eventuate-tram-sagas-spring-flyway` 0.26.0). A correct `eventuate` schema has 11
-tables (7 + 4 saga).
+from `eventuate-tram-sagas-spring-flyway` 0.26.0). A correct `eventuate` schema has 8
+tables (4 + 4 saga).
 
 Init scripts run only on a **fresh** volume. To fix a DB that came up before `04` existed:
 ```bash

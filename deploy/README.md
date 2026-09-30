@@ -50,7 +50,7 @@ Services started:
 |---------------|-----------|------------------------------------------------|
 | vab-kafka     | 9092      | Kafka broker (KRaft — no ZK quorum)            |
 | vab-zk        | 2181      | ZooKeeper — CDC leader election only           |
-| vab-cdc       | 8080      | Eventuate CDC (Polling → Kafka, 2 pipelines)   |
+| vab-cdc       | 8080      | Eventuate CDC (Polling → Kafka, Tram outbox pipeline) |
 | vab-mongo     | 27017     | MongoDB read projections                       |
 | ~~vab-apicurio~~ | — | Removed (unused schema registry, C3) |
 | vab-keycloak  | 8088      | OIDC Provider (Keycloak, Postgres-backed) — realm `vab` (§A-1) |
@@ -312,7 +312,7 @@ curl -s  http://localhost:8080/v1/orders/<orderId>                   # → order
 
 ### Read model empty / order stuck at PLACED / no projector logs
 
-Symptom: order placement succeeds, `eventuate.events` and the saga tables update,
+Symptom: order placement succeeds, `eventuate.message` and the saga tables update,
 but MongoDB has no `vab` database and the order never reaches `CONFIRMED`.
 
 Almost always means **CDC isn't running**. Check:
@@ -325,7 +325,7 @@ kafka/zk wasn't met during a slow cold start) or `Exited`, start it:
 docker start vab-cdc
 docker logs -f vab-cdc                       # wait for "Started EventuateCdcServiceMain"
 ```
-CDC then polls `eventuate.events`/`eventuate.message` for `published=0` rows and
+CDC then polls `eventuate.message` (the Tram outbox) for `published=0` rows and
 flushes the backlog to Kafka; the projector consumes and the read model fills.
 
 Quick confirmation the chain is live:
@@ -348,7 +348,7 @@ EVENTUATE_CDC_CREATE_TOPICS: "false"
 
 Then pre-create required topics manually:
 ```bash
-docker exec vab-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic eventuate.entities --partitions 1 --replication-factor 1
+docker exec vab-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic com.vab.order.command.domain.Order --partitions 1 --replication-factor 1
 docker exec vab-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic inventoryService --partitions 1 --replication-factor 1
 docker exec vab-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic billingService --partitions 1 --replication-factor 1
 ```

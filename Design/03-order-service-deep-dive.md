@@ -1,6 +1,6 @@
 # Order Service — Deep Dive
 
-> **Redesign note (DD-14/DD-15).** This deep-dive reflects the **post-Event-Sourcing** target: the Order aggregate is **state-stored** (a normal JPA row), and domain events are published to Kafka through Eventuate **Tram's transactional outbox**, not by event-sourcing the aggregate. Kafka remains the durable event log (replay/analytics). The MongoDB read model is an optional optimization with a read-your-writes fallback to Postgres. *Code migration from Eventuate Local ES is in progress; `docker-compose.yml` still provisions the legacy `localpipeline` until that lands.*
+> **Design note (DD-14/DD-15).** The Order aggregate is **state-stored** (a normal JPA row), and its domain events are published to Kafka through Eventuate **Tram's transactional outbox**, in the same transaction as the state change. Kafka is the durable event log (replay/analytics). The MongoDB read model is an optimization with a read-your-writes fallback to Postgres.
 
 ## Internal architecture
 

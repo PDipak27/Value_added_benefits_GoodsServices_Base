@@ -27,8 +27,7 @@ import java.util.UUID;
 
 /**
  * Read-side projector — consumes Order domain events from Kafka (relayed from
- * the Tram outbox by Eventuate CDC) and upserts the MongoDB read model
- * (post-DD-14).
+ * the Tram outbox by Eventuate CDC) and upserts the MongoDB read model.
  *
  * <p>The handler set is registered as an Eventuate Tram {@code DomainEventDispatcher}
  * (see {@code OrderServiceApplication}); the dispatcher id is the Kafka consumer

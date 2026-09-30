@@ -5,8 +5,8 @@ import io.eventuate.tram.events.common.DomainEvent;
 /**
  * Published (via the Tram transactional outbox) when an order is first placed.
  *
- * Post-DD-14: the Order aggregate is state-stored, not event-sourced. Domain
- * events are no longer the source of truth for aggregate state — they are
+ * The Order aggregate is state-stored (DD-14), so domain events are
+ * notifications, not the source of truth for aggregate state — they are
  * published to Kafka (through the outbox) for projections and downstream
  * consumers. {@code version} carries the aggregate's JPA {@code @Version} at
  * publish time so the projector can drop out-of-order events.

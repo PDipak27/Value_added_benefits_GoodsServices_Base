@@ -49,7 +49,7 @@
              (auth off in Lite; no Keycloak). See Design/lite-cutlist.md. -->
 
         <!-- ── Eventuate Tram — outbox + Kafka transport ────────────── -->
-        <!--   Post-DD-14: state-stored aggregate, no Eventuate Local ES.  -->
+        <!--   State-stored aggregate + transactional outbox (DD-14).  -->
         <dependency>
             <groupId>io.eventuate.tram.core</groupId>
             <artifactId>eventuate-tram-spring-jdbc-kafka</artifactId>

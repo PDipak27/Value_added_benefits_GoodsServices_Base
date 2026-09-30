@@ -44,3 +44,17 @@ Thumbs.db
 jenkins/ec2-trust-policy.json
 jenkins/jenkins-ecr-policy.json
 jenkins/jenkins-full-policy.json
+
+# infra/ec2/run-e2e.sh runtime (pids + service logs)
+.run/
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl.bak
+
+Design/vbg_lite_Tests_fork.md
+Design/diagrams - Copy.md
+

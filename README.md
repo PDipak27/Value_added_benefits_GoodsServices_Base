@@ -24,8 +24,8 @@ patterns working together end-to-end:
 - **Transactional outbox + event log** — the Order aggregate is stored as ordinary
   state; domain events are written to a Postgres outbox in the same transaction and
   relayed to Kafka, which serves as the durable, replayable event log (analytics,
-  recsys). *Note: the design deliberately does **not** event-source the aggregate —
-  see [`Design/08-design-decisions.md`](Design/08-design-decisions.md) DD-14.*
+  recsys). Why state-stored + outbox rather than an event-sourced aggregate: see
+  [`Design/08-design-decisions.md`](Design/08-design-decisions.md) DD-14.
 
 > **Scale envelope:** ~50 order TPS, ~300 read RPS — a single-node Postgres
 > workload. The patterns above are chosen for *capability*, not throughput.
@@ -50,11 +50,6 @@ Writes never touch Kafka directly. Domain events and saga messages are written
 transactionally to a Postgres outbox table; **Eventuate CDC** polls it and
 publishes to **Kafka**, giving an atomic "write + publish" guarantee. The Order
 projector consumes from Kafka and materializes the read model in MongoDB.
-
-> **Migration status:** the design (and these docs) reflect the post-Event-Sourcing
-> target. The code is mid-migration from Eventuate Local ES to state-stored +
-> Tram outbox; `docker-compose.yml` still provisions the legacy CDC `localpipeline`
-> until that lands.
 
 ## Services
 
@@ -83,7 +78,7 @@ projector consumes from Kafka and materializes the read model in MongoDB.
 | Document store | MongoDB 7 (order read-model projections + catalog store; order reads have a read-your-writes fallback) |
 | Catalog read-cache | Caffeine L1 (in-process) + Redis 7 L2 (shared); evict-on-write + Redis pub/sub L1 broadcast (skip-self) + 15s TTL backstop, not event-driven; fail-open on Redis outage — DD-17/DD-18/DD-19/DD-20 |
 | Change data capture | Eventuate CDC (Polling mode) |
-| Schema registry | none — Apicurio evaluated and dropped (events are plain Tram POJOs; see Design/10 §C3) |
+| Schema registry | none — Apicurio evaluated and dropped (events are plain Tram POJOs; see Design/08 DD-13) |
 
 > ZooKeeper is present **only** for Eventuate CDC leader election, not for Kafka.
 

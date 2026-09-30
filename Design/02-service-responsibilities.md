@@ -49,7 +49,7 @@ order-service/
 ```
 
 **Owns:**
-- Order aggregate lifecycle (state-stored JPA + domain events via Tram transactional outbox — *not* event-sourced; see DD-14)
+- Order aggregate lifecycle (state-stored JPA + domain events via Tram transactional outbox; see DD-14)
 - Saga orchestration (Eventuate Tram Sagas)
 - Event projections to MongoDB (optional read-model; reads degrade to the write store via read-your-writes — DD-15)
 - Idempotency dedupe
@@ -99,7 +99,7 @@ additionally idempotent via the reservation `status` (`RESERVED|ALLOCATED|RELEAS
 
 **Does not own:** what an order is. It only knows reservations.
 
-**Uses:** Eventuate Tram (participant only, no ES on inventory).
+**Uses:** Eventuate Tram (saga participant).
 
 ---
 

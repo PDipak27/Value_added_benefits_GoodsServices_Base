@@ -5,7 +5,7 @@ project you demo in interviews. It should run on **EKS** and ship through a **Je
 reusing what the **Lite** track already proved (tests, JaCoCo/Sonar, ECR/EKS, Jenkins on EC2).
 
 **Inputs.** `Design/vbg_lite_CICD_fork.md`, `vbg_lite_Tests_fork.md`, `lite-cutlist.md`,
-`lite-scope-outline.md`, `10-drift-and-backlog.md`, `11-deployment-k8s.md`, plus a file-level diff
+`lite-scope-outline.md`, `10-backlog.md`, `11-deployment-k8s.md`, plus a file-level diff
 of `order|inventory|billing-service` vs `lite-*`, `main` vs `cicdLite`, and the CI/k8s assets.
 Verified against code on 2026-09-25 (branch `cicdLite` @ `7723a73` + uncommitted Jenkins work).
 
@@ -370,7 +370,7 @@ Effort: S ≤ ½ day · M ≈ 1–2 days · L ≈ 3–5 days. Priority P0 = bloc
 - [ ] README rewrite: architecture diagram, "run locally in one command", "run on EKS", pipeline diagram, a
       **5-minute demo script** (below), and links to the DDs. **M**
 - [ ] Record a short demo video/GIF as a fallback when you can't spin up EKS during an interview. **S**
-- [ ] Doc fixes: catalog TTL (L1 120s / L2 300s), refresh `10-drift-and-backlog.md` with this plan. **S**
+- [ ] Doc fixes: catalog TTL (L1 120s / L2 300s), refresh `10-backlog.md` with this plan. **S**
 
 ### Phase 8: Backlog features (P2, pick 1–2)
 - [ ] DLQ Phase 1 on the projection consumers + replay endpoint + alert (C1). **L**

@@ -1,4 +1,4 @@
-# Eventuate CDC — polls the Postgres outbox (eventuate.message / eventuate.events) and relays
+# Eventuate CDC — polls the Tram outbox (eventuate.message) in Postgres and relays
 # to Kafka. Without it the saga never advances past the first command. Same env as
 # docker-compose.lite.yml (the compose already used the postgres/kafka/zookeeper service names).
 apiVersion: apps/v1
@@ -28,19 +28,9 @@ spec:
             - { name: EVENTUATELOCAL_KAFKA_BOOTSTRAP_SERVERS, value: "kafka:9092" }
             - { name: EVENTUATELOCAL_ZOOKEEPER_CONNECTION_STRING, value: "zookeeper:2181" }
             - { name: SPRING_PROFILES_ACTIVE, value: "EventuatePolling,Kafka" }
-            - { name: EVENTUATE_CDC_PIPELINE_LOCALPIPELINE_TYPE, value: "eventuate-local" }
-            - { name: EVENTUATE_CDC_PIPELINE_LOCALPIPELINE_READER, value: "localreader" }
-            - { name: EVENTUATE_CDC_PIPELINE_LOCALPIPELINE_EVENTUATEDATABASESCHEMA, value: "eventuate" }
             - { name: EVENTUATE_CDC_PIPELINE_TRAMPIPELINE_TYPE, value: "eventuate-tram" }
             - { name: EVENTUATE_CDC_PIPELINE_TRAMPIPELINE_READER, value: "tramreader" }
             - { name: EVENTUATE_CDC_PIPELINE_TRAMPIPELINE_EVENTUATEDATABASESCHEMA, value: "eventuate" }
-            - { name: EVENTUATE_CDC_READER_LOCALREADER_TYPE, value: "polling" }
-            - { name: EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEURL, value: "jdbc:postgresql://postgres:5432/vab" }
-            - { name: EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEUSERNAME, value: "eventuate" }
-            - { name: EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEPASSWORD, value: "eventuate" }
-            - { name: EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEDRIVERCLASSNAME, value: "org.postgresql.Driver" }
-            - { name: EVENTUATE_CDC_READER_LOCALREADER_LEADERSHIPLOCKPATH, value: "/eventuate/cdc/leader/local" }
-            - { name: EVENTUATE_CDC_READER_LOCALREADER_OUTBOXID, value: "1" }
             - { name: EVENTUATE_CDC_READER_TRAMREADER_TYPE, value: "polling" }
             - { name: EVENTUATE_CDC_READER_TRAMREADER_DATASOURCEURL, value: "jdbc:postgresql://postgres:5432/vab" }
             - { name: EVENTUATE_CDC_READER_TRAMREADER_DATASOURCEUSERNAME, value: "eventuate" }

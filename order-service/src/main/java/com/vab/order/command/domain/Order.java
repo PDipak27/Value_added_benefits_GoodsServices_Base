@@ -4,10 +4,10 @@ import jakarta.persistence.*;
 import java.time.Instant;
 
 /**
- * Order aggregate — state-stored JPA entity (post-DD-14).
+ * Order aggregate — state-stored JPA entity (DD-14).
  *
  * <p>The aggregate's current state lives in one updatable row in
- * {@code orders.orders}; it is NOT event-sourced. Domain events are published
+ * {@code orders.orders}. Domain events are published
  * separately, in the same transaction, through the Eventuate Tram outbox
  * ({@code OrderCommandService} + {@code DomainEventPublisher}).
  *

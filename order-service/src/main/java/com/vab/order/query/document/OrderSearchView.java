@@ -8,7 +8,7 @@ import java.time.Instant;
 /**
  * Ops-dashboard read model (§B3). A flattened, timeline-free shape over the SAME
  * order event stream as {@code orders_v1}, demonstrating "one event stream → many
- * read shapes" (iter-3 §8.3). Maintained by its own projector + consumer group
+ * read shapes". Maintained by its own projector + consumer group
  * ({@code orderSearchProjector}), independently of {@code orders_v1}, and indexed
  * on {@code status}/{@code offerCode}/{@code placedAt} for ops filtering.
  */

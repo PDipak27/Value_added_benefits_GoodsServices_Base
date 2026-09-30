@@ -16,20 +16,18 @@ Format: each decision records the problem, the options considered, the choice ma
 
 ---
 
-## DD-02 — Event Sourcing scoped to Order aggregate only  ⚠️ SUPERSEDED by DD-14
+## DD-02 — Domain events for every aggregate, published through an outbox (no event-sourced aggregates)
 
-**Problem:** Where should ES be applied?
+**Problem:** Other services, the read side and analytics need to learn about state changes. Where do those events come from, and what is the source of truth for aggregate state?
 
 **Options:**
-- A) ES everywhere (all aggregates)
-- B) ES on Order only
-- C) No ES, just domain events
+- A) Event-source every aggregate (the event stream *is* the state)
+- B) Event-source only the Order aggregate
+- C) State-store every aggregate; publish domain events alongside the state change
 
-**Original choice:** B. **Revised choice (DD-14):** C — *no ES anywhere; domain events via outbox.*
+**Choice:** C — every aggregate is a normal state-stored row, and domain events are written to the Tram outbox in the same transaction.
 
-**Original rationale:** Inventory and Billing are Saga *participants* — their state is simple, append-is-not-required, and the operational overhead of ES (replay, snapshot, projection) would add noise without insight. Order state is legally/operationally significant: "prove when this subscriber canceled, what the price was at order time, what compensation steps ran." ES earns its keep only here.
-
-**Why this flipped:** the design review (50 TPS / 300 RPS) showed the audit/temporal needs are fully met by the **Kafka event log + a small `order_status_history` table + the stored `price_snapshot_id`** — none of which require event-sourcing the *aggregate*. ES's permanent tax (event-schema evolution + upcasting forever, snapshots, eventual-consistency reads) bought nothing the cheaper option doesn't. See DD-14.
+**Rationale:** Order is the only aggregate whose history matters (what the price was, when the subscriber cancelled, which compensations ran), so B was the serious alternative. Those audit/temporal needs are met more cheaply by the Kafka event log, an `order_status_history` table and the immutable `price_snapshot_id` on the order row. The full trade-off is in DD-14.
 
 ---
 
@@ -92,7 +90,7 @@ The "polling is a bottleneck" critique is rejected at this volume: ~50 TPS is a 
 **Problem:** CQRS is a logical split; should it be a physical split (two deployables)?
 
 **Options:**
-- A) Two Spring Boot apps (command-service, query-service) sharing an event store
+- A) Two Spring Boot apps (command-service, query-service) sharing one database
 - B) One Spring Boot app, two internal packages (command/, query/)
 
 **Choice:** B
@@ -159,15 +157,13 @@ The "polling is a bottleneck" critique is rejected at this volume: ~50 TPS is a 
 
 ---
 
-## DD-11 — Eventuate Tram for Inventory and Billing (not ES)
+## DD-11 — Eventuate Tram for every service (messaging, outbox, sagas)
 
-**Problem:** Saga participants need command handling and message infrastructure, but not event sourcing.
+**Problem:** Saga participants and the orchestrator need command handling, reliable publishing and message infrastructure.
 
-**Choice:** Eventuate Tram (participant mode) without ES.
+**Choice:** Eventuate Tram everywhere — participant mode for Inventory/Billing/Fulfilment, orchestration for Order, `DomainEventPublisher` for domain events.
 
-**Rationale:** Inventory and Billing don't need the full audit trail / replay capability of ES. Using Tram-only for participants demonstrates that ES and Saga are independent patterns — each applied where they earn their complexity, not applied globally as a framework choice.
-
-**Post-DD-14:** this is now the rule for *every* service, Order included — Tram everywhere, ES nowhere. The pattern this codebase demonstrates is "transactional outbox + domain events," with Saga layered on top.
+**Rationale:** Tram gives the transactional outbox, consumer de-duplication (`received_messages`) and the saga DSL in one library family, without imposing an aggregate persistence model. It shows that Saga, CQRS and "events on Kafka" are independent patterns, each applied where it earns its complexity (DD-02 / DD-14).
 
 ---
 
@@ -177,7 +173,7 @@ The "polling is a bottleneck" critique is rejected at this volume: ~50 TPS is a 
 
 **Options:**
 - A) `PostgresWal` — lower latency, but requires Postgres config changes (superuser ALTER SYSTEM, restart), wal2json extension, and a replication slot.
-- B) `EventuatePolling` — CDC polls `eventuate.events` and `eventuate.message` tables for rows where `published=0`. Slightly higher latency.
+- B) `EventuatePolling` — CDC polls the `eventuate.message` outbox table for rows where `published=0`. Slightly higher latency.
 
 **Choice:** B (`EventuatePolling`)
 
@@ -185,39 +181,43 @@ The "polling is a bottleneck" critique is rejected at this volume: ~50 TPS is a 
 
 **Operational note — ZooKeeper resurfaces for CDC, not for Kafka:** Kafka itself runs in KRaft mode (no ZK quorum). The Eventuate CDC service, however, uses a ZooKeeper lock (`/eventuate/cdc/leader/tram`) for leader election across CDC replicas — this is a framework requirement even with a single CDC instance, and it is what makes a multi-instance HA deployment safe. The compose therefore ships `confluentinc/cp-zookeeper:7.7.1` solely as a CDC dependency.
 
-**Single pipeline after DD-14:** with Event Sourcing removed there is no Local ES `eventuate.events` store, so the former `localpipeline` (outboxId=1) is retired. CDC now runs **one** `trampipeline` reader polling `eventuate.message` — which carries *both* the Order domain events (via `DomainEventPublisher`) and the Inventory/Billing saga command/reply traffic. One CDC service, one reader, one ZK lock, one Kafka publisher. *(`docker-compose.yml` still defines both pipelines until the code migration off Local ES lands.)*
+**Single pipeline:** CDC runs **one** `trampipeline` reader polling `eventuate.message`, which carries *both* the Order domain events (via `DomainEventPublisher`) and the saga command/reply traffic. One CDC service, one reader, one ZK lock, one Kafka publisher.
 
 ---
 
-## DD-13 — Apicurio for schema registry (not Confluent)
+## DD-13 — No schema registry; events are versioned Java DTOs in `shared-events`
 
-**Problem:** Event schemas need versioning and validation.
-
-**Choice:** Apicurio (open source, same REST API as Confluent SR).
-
-**Rationale:** Confluent Schema Registry requires a Confluent Platform license for production features. Apicurio is fully open source and exposes the same API, so the client configuration is identical. No vendor lock-in. In-memory mode for dev; persistent mode for staging/prod.
-
----
-
-## DD-14 — Drop Event Sourcing on Order: state-stored aggregate + transactional outbox  *(supersedes DD-02)*
-
-**Problem:** A design review of the stack — *CQRS + ES + Saga + CDC + Kafka + Mongo* — at the real volume (**~50 order TPS, ~300 read RPS**) raised three fair criticisms: (1) too many moving parts / fragile transaction story, (2) too many consistency layers, (3) CDC is an operational dependency. None of the patterns is needed for *scale* at this volume, so each must justify itself on capability.
+**Problem:** Event schemas need versioning and compatibility checks.
 
 **Options:**
-- A) Keep full Event Sourcing on Order (status quo, DD-02).
-- B) **State-store the Order aggregate (normal JPA row) and publish domain events via the Tram transactional outbox.** Events still reach Kafka; the aggregate is just not rebuilt from them.
-- C) Drop events entirely, point-to-point calls.
+- A) Confluent Schema Registry (commercial features need a Confluent licence)
+- B) Apicurio (open source, Confluent-compatible API)
+- C) No registry: events are plain JSON-serialised DTOs in a shared `shared-events` module, evolved additively
+
+**Choice:** C (Apicurio was evaluated and ran in the dev stack, but nothing registered with it, so it was removed).
+
+**Rationale:** All producers and consumers are in one repo and one build, so the compiler already enforces the contract, and additive-only changes (new optional fields) keep old consumers working. A registry pays off once independently released teams or non-JVM consumers read the topics. Apicurio would be the pick then, for the same reason as B.
+
+---
+
+## DD-14 — Order aggregate is state-stored, with a transactional outbox, not event-sourced
+
+**Problem:** The Order is the aggregate with real history: price at order time, cancellations, saga compensations. Should it be event-sourced? At the real volume (**~50 order TPS, ~300 read RPS**) none of the patterns is needed for *scale*, so each must justify itself on capability, and the stack (*CQRS + Saga + CDC + Kafka + Mongo*) already has several moving parts.
+
+**Options:**
+- A) Event-source the Order aggregate (Eventuate Local ES: the event stream is the state; snapshots; rebuild from events).
+- B) **State-store the Order aggregate (a normal JPA row) and publish domain events via the Tram transactional outbox.** Events still reach Kafka; the aggregate is just not rebuilt from them.
+- C) No events at all, point-to-point calls.
 
 **Choice:** **B**
 
-**Rationale:** The key insight is that **"events on Kafka" and "event-sourcing the aggregate" are independent decisions.** Kafka-as-event-log was approved as a *strategic asset* (replay, analytics, recsys) — option B preserves that fully via the outbox. What it removes is ES's permanent tax: aggregate event-schema evolution + upcasting *forever*, snapshotting, and read-side eventual consistency on the write model. The audit/temporal requirements that originally justified ES (DD-02) are met more cheaply by the **Kafka event log + a small `order_status_history` table + the immutable `price_snapshot_id` on the order row**. At 50 TPS the rebuild-from-events capability has no operational payoff.
+**Rationale:** The key insight is that **"events on Kafka" and "event-sourcing the aggregate" are independent decisions.** Kafka as a durable event log is a *strategic asset* (replay, analytics, recsys), and option B keeps it fully via the outbox. What B avoids is event sourcing's permanent tax: aggregate event-schema evolution and upcasting *forever*, snapshotting, and eventual consistency on the write model. The audit/temporal needs are met more cheaply by the **Kafka event log + a small `order_status_history` table + the immutable `price_snapshot_id` on the order row**. At 50 TPS a rebuild-from-events capability has no operational payoff.
 
-**What this changes / does not change:**
-- **Removed:** `eventuate-local-java-spring-{jdbc,events}-starter`, the `eventuate.events` store, and the CDC `localpipeline`.
-- **Added:** `eventuate-tram-spring-events` — `DomainEventPublisher` on the write side, `DomainEventHandlers` in the projector.
-- **Unchanged:** Saga (DD-03), CDC + outbox (DD-05), Kafka, Mongo read model, idempotency. The Order write is still one Postgres transaction; events still flow to Kafka through the same relay.
-
-**Net of the whole review:** *one thing to remove (ES), one thing to operate better (CDC — HA + lag alerts, DD-05), nothing to swap.*
+**Consequences:**
+- **Libraries:** `eventuate-tram-spring-events` (`DomainEventPublisher` on the write side, `DomainEventHandlers` in the projectors). The Eventuate Local ES starters are not used.
+- **Schema:** only the Tram tables (`message`, `received_messages`, CDC bookkeeping) plus the saga tables. There is no event store, and CDC runs a single Tram pipeline (DD-12).
+- **What it keeps:** Saga (DD-03), CDC + outbox (DD-05), Kafka, the Mongo read model and idempotency. An Order write is one Postgres transaction, and its events flow to Kafka through the same relay.
+- **When to revisit:** if a regulator needs *point-in-time reconstruction* of arbitrary past order states, or if temporal queries become core product features, event sourcing becomes worth its tax.
 
 ---
 

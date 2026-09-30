@@ -3,9 +3,8 @@ package com.vab.order.command.domain;
 /**
  * Place-order request, carried from the Command API to the command service.
  *
- * Post-DD-14 this is a plain DTO (no Eventuate {@code Command} interface): the
- * state-stored aggregate is mutated directly, not driven through an ES command
- * processor.
+ * A plain DTO: {@code OrderCommandService} applies it directly to the
+ * state-stored aggregate (DD-14).
  */
 public class PlaceOrderCommand {
     private String subscriberId;

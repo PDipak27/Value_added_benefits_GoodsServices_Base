@@ -11,7 +11,7 @@ import org.testcontainers.utility.MountableFile;
 
 /**
  * Shared Testcontainers infra for the Lite integration tests: a real Postgres 18
- * (pre-seeded with the eventuate ES/Tram + saga schema, as the compose does) and a
+ * (pre-seeded with the eventuate Tram + saga schema, as the compose does) and a
  * real Kafka. Static singletons, reused across every {@code *IT} in the module.
  */
 @Testcontainers

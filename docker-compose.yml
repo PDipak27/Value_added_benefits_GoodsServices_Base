@@ -51,7 +51,7 @@ services:
       start_period: 30s
 
   # ── Eventuate CDC — Postgres Polling → Kafka ─────────────────────────────
-  # Polls eventuate.events / eventuate.message for published=0 rows.
+  # Polls the Tram outbox (eventuate.message) for published=0 rows.
   # Connects to your LOCAL Postgres 18 via host.docker.internal.
   # Prereq: run deploy/postgres-init/01-eventuate-schema.sql first.
   eventuate-cdc:
@@ -79,23 +79,10 @@ services:
       # Polling mode — no wal2json, no replication slot needed
       SPRING_PROFILES_ACTIVE: EventuatePolling,Kafka
 
-      # ── Pipeline: routes reader output to Kafka in Eventuate-Local format ─
-      EVENTUATE_CDC_PIPELINE_LOCALPIPELINE_TYPE: eventuate-local
-      EVENTUATE_CDC_PIPELINE_LOCALPIPELINE_READER: localreader
-      EVENTUATE_CDC_PIPELINE_LOCALPIPELINE_EVENTUATEDATABASESCHEMA: eventuate
-
+      # ── Pipeline: Tram outbox → Kafka (one reader, one pipeline) ──────────
       EVENTUATE_CDC_PIPELINE_TRAMPIPELINE_TYPE: eventuate-tram
       EVENTUATE_CDC_PIPELINE_TRAMPIPELINE_READER: tramreader
       EVENTUATE_CDC_PIPELINE_TRAMPIPELINE_EVENTUATEDATABASESCHEMA: eventuate
-
-      # Reader for Local ES events
-      EVENTUATE_CDC_READER_LOCALREADER_TYPE: polling
-      EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEURL: jdbc:postgresql://host.docker.internal:5432/vab
-      EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEUSERNAME: eventuate
-      EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEPASSWORD: eventuate
-      EVENTUATE_CDC_READER_LOCALREADER_DATASOURCEDRIVERCLASSNAME: org.postgresql.Driver
-      EVENTUATE_CDC_READER_LOCALREADER_LEADERSHIPLOCKPATH: /eventuate/cdc/leader/local
-      EVENTUATE_CDC_READER_LOCALREADER_OUTBOXID: 1
 
       # Reader for Tram messages
       EVENTUATE_CDC_READER_TRAMREADER_TYPE: polling
@@ -150,7 +137,7 @@ services:
       retries: 5
 
   # Apicurio schema registry removed (C3 decision, 2026-09-25): it ran but no event was ever
-  # registered — events are plain Tram POJOs via JSonMapper. See Design/10 §C3.
+  # registered — events are plain Tram POJOs via JSonMapper. See Design/08 DD-13.
 
   # ── Keycloak — OIDC Provider (DD-29 / §A-1), Postgres-backed ──────────────
   # The OpenID Provider for federated auth. Phase A-1 ships only the

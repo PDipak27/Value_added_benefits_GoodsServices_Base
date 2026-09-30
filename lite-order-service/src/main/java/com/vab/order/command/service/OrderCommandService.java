@@ -30,12 +30,12 @@ import io.eventuate.tram.events.publisher.DomainEventPublisher;
 import io.eventuate.tram.sagas.orchestration.SagaInstanceFactory;
 
 /**
- * Write side of the Order aggregate (post-DD-14).
+ * Write side of the Order aggregate (DD-14).
  *
  * <p>The aggregate is state-stored via JPA; domain events are published through
  * the Eventuate Tram transactional outbox in the <em>same</em> JDBC transaction
- * as the state change, giving the atomic "write + publish" guarantee without
- * event-sourcing the aggregate. Eventuate CDC relays the outbox to Kafka.
+ * as the state change, giving the atomic "write + publish" guarantee with no
+ * dual write. Eventuate CDC relays the outbox to Kafka.
  */
 @Service
 public class OrderCommandService {
