@@ -1,0 +1,53 @@
+# Overlay for a Linux host WITHOUT a locally installed Postgres (EC2 / CI box):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ec2.yml up -d
+#
+#  1. adds Postgres 18 as a container on :5432, initialised with the eventuate (Tram outbox)
+#     schema, the Keycloak DB and the saga tables — the laptop setup gets these from the
+#     host Postgres install. Host-run services keep their localhost:5432 defaults.
+#  2. repoints CDC + Keycloak at that container (service DNS instead of host.docker.internal)
+#     and makes them wait for it.
+#  3. moves the CDC actuator from host :8080 to :8090 — Jenkins owns :8080 on the CI box.
+# Needs docker compose >= 2.24 (for `!override`). Used by infra/ec2/run-e2e.sh.
+services:
+  postgres:
+    image: postgres:18
+    container_name: vab-postgres
+    environment:
+      POSTGRES_DB: vab
+      POSTGRES_USER: eventuate
+      POSTGRES_PASSWORD: eventuate
+      TZ: Asia/Kolkata
+    command: ["postgres", "-c", "max_connections=150"]
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql
+      - ./deploy/postgres-init/01-eventuate-schema.sql:/docker-entrypoint-initdb.d/01-eventuate-schema.sql:ro
+      - ./deploy/postgres-init/03-keycloak-db.sql:/docker-entrypoint-initdb.d/03-keycloak-db.sql:ro
+      - ./deploy/postgres-init/04-tram-saga-schema.sql:/docker-entrypoint-initdb.d/04-tram-saga-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eventuate -d vab"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  eventuate-cdc:
+    ports: !override
+      - "8090:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/vab
+      EVENTUATE_CDC_READER_TRAMREADER_DATASOURCEURL: jdbc:postgresql://postgres:5432/vab
+
+  keycloak:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+
+volumes:
+  pg_data:

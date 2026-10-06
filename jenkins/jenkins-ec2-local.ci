@@ -1,0 +1,154 @@
+// VA-BAGS FULL edition — local CI on the spot EC2 that ALSO hosts Jenkins (single-box).
+//
+//   pull main -> Build + Unit + IT -> [SonarQube] -> E2E (full stack via docker-compose + host JVMs)
+//
+// Everything runs on the Jenkins controller's own node (agent any) — the same t3.xlarge spot box.
+// Because Jenkins owns :8080, the compose overlay docker-compose.ec2.yml moves eventuate-cdc to :8090
+// and adds a Postgres 18 container on :5432 (init SQL for the eventuate/keycloak/saga schemas).
+//
+// Profiles/facts baked into this pipeline (see the config audit):
+//   - Full edition is the Maven default (no -Dlite).
+//   - Auth is ON: the e2e suite REQUIRES Keycloak (mints tokens + creates users via the Admin API).
+//   - Observability (Loki/Grafana/Tempo + OTLP export) is OFF by default; opt in with the OBS param,
+//     which adds `--profile obs` to compose and `--spring.profiles.active=obs` to the services.
+//
+// Agent toolchain (from your AMI): JDK17 (tool 'jdk17') + Maven ('maven3'), docker + compose v2,
+// curl, keytool/openssl (for the gateway self-signed keystore).
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    timeout(time: 60, unit: 'MINUTES')
+  }
+
+  tools {
+    jdk   'jdk17'
+    maven 'maven3'
+  }
+
+  parameters {
+    booleanParam(name: 'RUN_SONAR', defaultValue: false, description: 'Run SonarQube analysis after Unit+IT (needs the on-demand Sonar container up — jenkins/docker-compose.sonar.yml)')
+    booleanParam(name: 'RUN_E2E',   defaultValue: true,  description: 'Bring up the full stack via docker-compose + host JVMs and run the *E2E suite')
+    string(name: 'E2E_TESTS',       defaultValue: '',    description: 'Comma-separated *E2E class names to run (empty = all)')
+    booleanParam(name: 'OBS',       defaultValue: false, description: 'Also start Loki/Grafana/Tempo and run services with the obs profile')
+  }
+
+  environment {
+    REPO              = 'https://github.com/PDipak27/Value_added_benefits_GoodsServices_Base.git'
+    SONAR_PROJECT_KEY = 'vabags-full'
+    // start order: leaf services -> orchestrator -> edge. module:port (api-gateway is HTTPS).
+    SERVICES          = 'catalog-service:8085 inventory-service:8082 billing-service:8083 notification-service:8084 ott-service:8087 fulfilment-service:8086 order-service:8081 api-gateway:8089'
+    COMPOSE           = 'docker compose -f docker-compose.yml -f docker-compose.ec2.yml'
+    KEYSTORE_PASSWORD = 'changeit'
+  }
+
+  stages {
+    stage('Checkout (main)') {
+      steps { git branch: 'main', url: env.REPO }
+    }
+
+    // Unit (surefire, *Test) + IT (failsafe, *IT via Testcontainers) in one pass. `verify` also
+    // repackages the fat jars, so the E2E stage reuses */target/*.jar without rebuilding.
+    // JaCoCo (surefire+failsafe) -> target/site/jacoco/jacoco.xml for Sonar.
+    stage('Build + Unit + IT') {
+      steps {
+        sh 'mvn -B -ntp -Pit verify'
+      }
+      post {
+        always {
+          junit testResults: '**/target/surefire-reports/*.xml, **/target/failsafe-reports/*.xml',
+                allowEmptyResults: true
+          archiveArtifacts artifacts: '**/target/site/jacoco/jacoco.xml', allowEmptyArchive: true
+        }
+      }
+    }
+
+    // On-demand Sonar container (localhost:9000) must be up: jenkins/docker-compose.sonar.yml.
+    // withSonarQubeEnv injects host+token; we pass them via -D to override pom.xml's committed token.
+    stage('SonarQube') {
+      when { expression { return params.RUN_SONAR } }
+      steps {
+        withSonarQubeEnv('sonarqube') {
+          sh '''
+            for i in $(seq 1 30); do
+              curl -sf "$SONAR_HOST_URL/api/system/status" | grep -q '"status":"UP"' && break
+              [ "$i" = "30" ] && { echo "SonarQube not UP - start jenkins/docker-compose.sonar.yml"; exit 1; }
+              sleep 5
+            done
+            mvn -B -ntp sonar:sonar \
+              -Dsonar.host.url="$SONAR_HOST_URL" -Dsonar.token="$SONAR_AUTH_TOKEN" \
+              -Dsonar.projectKey="$SONAR_PROJECT_KEY"
+          '''
+        }
+      }
+    }
+
+    // Full running stack on this box: compose infra (incl. Keycloak) + the 8 services as host JVMs
+    // (they use application.yml's localhost defaults, which the ec2 overlay satisfies), then the
+    // black-box *E2E suite through the HTTPS gateway (:8089) + Keycloak (:8088).
+    stage('E2E') {
+      when { expression { return params.RUN_E2E } }
+      steps {
+        sh '''
+          set -e
+          RUN="$WORKSPACE/.run"; mkdir -p "$RUN/logs"
+          PROFILES=""; COMPOSE_ARGS=""
+          if [ "$OBS" = "true" ]; then PROFILES="--spring.profiles.active=obs"; COMPOSE_ARGS="--profile obs"; fi
+
+          wait_for() { n="$1"; u="$2"; to="$3"; t=0; until curl -fsk -o /dev/null "$u"; do t=$((t+5)); [ "$t" -ge "$to" ] && { echo "TIMEOUT $n ($u)"; return 1; }; sleep 5; done; echo "  ok $n"; }
+
+          # 1. gateway self-signed keystore (HTTPS on :8089). e2e uses relaxed TLS, so localhost SAN is fine.
+          if [ ! -f deploy/tls/gateway-keystore.p12 ]; then
+            OUT_DIR=deploy/tls KEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" bash k8s-full/scripts/gen-selfsigned-tls.sh localhost
+          fi
+
+          # 2. infrastructure (postgres, kafka, zookeeper, cdc, mongo, redis, keycloak [+ obs])
+          $COMPOSE $COMPOSE_ARGS up -d
+          wait_for "keycloak realm" http://localhost:8088/realms/vab/.well-known/openid-configuration 300
+          wait_for "eventuate-cdc"  http://localhost:8090/actuator/health 300
+
+          # 3. services as host JVMs (reuse the jars from `verify`)
+          for entry in $SERVICES; do
+            svc="${entry%%:*}"
+            jar="$(ls "$svc"/target/*.jar 2>/dev/null | grep -v -- '-plain' | head -1)"
+            [ -n "$jar" ] || { echo "no jar for $svc"; exit 1; }
+            nohup java -Xmx256m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Duser.timezone=Asia/Kolkata \
+              -jar "$jar" $PROFILES > "$RUN/logs/$svc.out" 2>&1 &
+            echo $! > "$RUN/$svc.pid"; echo "  started $svc (pid $!)"
+          done
+
+          # 4. health gate
+          for entry in $SERVICES; do
+            svc="${entry%%:*}"; port="${entry##*:}"; scheme=http; [ "$svc" = api-gateway ] && scheme=https
+            wait_for "$svc" "$scheme://localhost:$port/actuator/health" 300 \
+              || { echo "--- $svc log tail ---"; tail -40 "$RUN/logs/$svc.out"; exit 1; }
+          done
+
+          # 5. e2e suite
+          mvn -B -ntp -pl e2e-tests -Pe2e test \
+            ${E2E_TESTS:+-Dtest="$E2E_TESTS"} -Dsurefire.failIfNoSpecifiedTests=false \
+            -Dvab.gateway.url=https://localhost:8089 -Dvab.keycloak.url=http://localhost:8088
+        '''
+      }
+      post {
+        always {
+          junit testResults: 'e2e-tests/target/surefire-reports/*.xml', allowEmptyResults: true
+          archiveArtifacts artifacts: '.run/logs/*.out', allowEmptyArchive: true
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      // stop host-JVM services, then the compose stack (keep volumes so infra images/data stay cached).
+      sh '''
+        for p in "$WORKSPACE"/.run/*.pid; do [ -e "$p" ] || continue; kill "$(cat "$p")" 2>/dev/null || true; done
+        $COMPOSE --profile obs down || true
+      '''
+      cleanWs()
+    }
+  }
+}
