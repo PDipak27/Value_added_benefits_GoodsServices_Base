@@ -1,5 +1,5 @@
-# eksctl ClusterConfig for the FULL edition — declarative, reviewed in git (rendered by
-# create-cluster.sh, which fills the __PLACEHOLDERS__). Cost-first choices, same as Lite:
+# eksctl ClusterConfig for VA-BAGS — declarative, reviewed in git (rendered by
+# create-cluster.sh, which fills the __PLACEHOLDERS__). Cost-first choices:
 #   • no NAT gateway (≈$1/day saved): nodes sit in PUBLIC subnets and egress via the IGW
 #   • spot managed node group, 2 × *.large (8 GiB) — the full stack requests ≈ 6–7 GiB
 #   • EBS CSI add-on (IRSA via the cluster OIDC provider) for the StatefulSets' gp3 PVCs

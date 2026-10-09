@@ -1,4 +1,4 @@
-// VA-BAGS FULL edition — local CI on the spot EC2 that ALSO hosts Jenkins (single-box).
+// VA-BAGS — local CI on the spot EC2 that ALSO hosts Jenkins (single-box).
 //
 //   pull main -> Build + Unit + IT -> [SonarQube] -> E2E (full stack via docker-compose + host JVMs)
 //
@@ -7,7 +7,6 @@
 // and adds a Postgres 18 container on :5432 (init SQL for the eventuate/keycloak/saga schemas).
 //
 // Profiles/facts baked into this pipeline (see the config audit):
-//   - Full edition is the Maven default (no -Dlite).
 //   - Auth is ON: the e2e suite REQUIRES Keycloak (mints tokens + creates users via the Admin API).
 //   - Observability (Loki/Grafana/Tempo + OTLP export) is OFF by default; opt in with the OBS param,
 //     which adds `--profile obs` to compose and `--spring.profiles.active=obs` to the services.
@@ -101,7 +100,7 @@ pipeline {
 
           # 1. gateway self-signed keystore (HTTPS on :8089). e2e uses relaxed TLS, so localhost SAN is fine.
           if [ ! -f deploy/tls/gateway-keystore.p12 ]; then
-            OUT_DIR=deploy/tls KEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" bash k8s-full/scripts/gen-selfsigned-tls.sh localhost
+            OUT_DIR=deploy/tls KEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" bash k8s-eks/scripts/gen-selfsigned-tls.sh localhost
           fi
 
           # 2. infrastructure (postgres, kafka, zookeeper, cdc, mongo, redis, keycloak [+ obs])

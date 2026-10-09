@@ -1,0 +1,9 @@
+# EKS overlay: the base + three public NLBs on AWS-provided hostnames.
+# Images, the public-URL ConfigMap, secrets and TLS material are injected by
+# k8s-eks/scripts/deploy.sh (see that script for the ordering).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - lb-services.yaml

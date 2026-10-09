@@ -1,4 +1,4 @@
-# VA-BAGS Lite — on-demand SonarQube (Community) for the Jenkins EC2 build server.
+# VA-BAGS — on-demand SonarQube (Community) for the Jenkins EC2 build server.
 #
 # Runs the SonarQube server + its own Postgres on the SAME host as Jenkins, so:
 #   - the scanner (mvn sonar:sonar on the Jenkins agent) reaches it at  http://localhost:9000
@@ -16,7 +16,7 @@
 # HOST PREREQ (once): SonarQube embeds Elasticsearch, which needs a raised mmap limit:
 #     sudo sysctl -w vm.max_map_count=262144
 #     echo 'vm.max_map_count=262144' | sudo tee /etc/sysctl.d/99-sonarqube.conf
-# On a 4GB t3.medium also add ~2GB swap (see Design/lite-jenkins-guide.md §9).
+# infra/ec2/setup.sh already sets this (and adds swap) on the CI box.
 
 services:
   sonarqube-db:

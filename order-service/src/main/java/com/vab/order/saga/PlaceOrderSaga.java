@@ -250,42 +250,47 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
         return sagaDefinition;
     }
 
+    // The saga step methods below (predicates, command builders, reply handlers and
+    // local steps) are package-private rather than private so PlaceOrderSagaTest can
+    // drive them directly as plain unit tests — Eventuate invokes them via method
+    // references, so no wider visibility is needed.
+
     // ── Predicates ─────────────────────────────────────────────────────────────
 
-    private boolean isPayNow(PlaceOrderSagaData data) {
+    boolean isPayNow(PlaceOrderSagaData data) {
         return PAY_NOW.equals(data.getBillingMode());
     }
 
-    private boolean isBillToMobile(PlaceOrderSagaData data) {
+    boolean isBillToMobile(PlaceOrderSagaData data) {
         return BILL_TO_MOBILE.equals(data.getBillingMode());
     }
 
-    private boolean isForwardRecover(PlaceOrderSagaData data) {
+    boolean isForwardRecover(PlaceOrderSagaData data) {
         return data.isForwardRecover();
     }
 
     /** Fulfil only on the happy forward path — skipped once forward-recovering (DD-26). */
-    private boolean shouldFulfil(PlaceOrderSagaData data) {
+    boolean shouldFulfil(PlaceOrderSagaData data) {
         return !data.isForwardRecover();
     }
 
-    private boolean shouldRefund(PlaceOrderSagaData data) {
+    boolean shouldRefund(PlaceOrderSagaData data) {
         return isPayNow(data) && data.isForwardRecover();
     }
 
-    private boolean shouldReverseLedger(PlaceOrderSagaData data) {
+    boolean shouldReverseLedger(PlaceOrderSagaData data) {
         return isBillToMobile(data) && data.isForwardRecover();
     }
 
     // ── Step 1: Reserve (PAY_NOW) ───────────────────────────────────────────────
 
-    private ReserveInventoryCommand reserveInventory(PlaceOrderSagaData data) {
+    ReserveInventoryCommand reserveInventory(PlaceOrderSagaData data) {
         log.info("Saga reserve: orderId={}, offerCode={}, productType={}",
                 data.getOrderId(), data.getOfferCode(), data.getProductType());
         return new ReserveInventoryCommand(data.getOfferCode(), 1);
     }
 
-    private void handleInventoryReserved(PlaceOrderSagaData data, InventoryReserved reply) {
+    void handleInventoryReserved(PlaceOrderSagaData data, InventoryReserved reply) {
         log.info("Saga reserve OK: orderId={}, reservationId={}, type={}, key={}, until={}",
                 data.getOrderId(), reply.getReservationId(), reply.getProductType(),
                 reply.getActivationKey(), reply.getReservedUntil());
@@ -293,14 +298,14 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
         data.setActivationKey(reply.getActivationKey());   // SOFTWARE_LICENSE: key claimed here
     }
 
-    private void handleInventoryReservationFailed(PlaceOrderSagaData data, InventoryReservationFailed reply) {
+    void handleInventoryReservationFailed(PlaceOrderSagaData data, InventoryReservationFailed reply) {
         log.warn("Saga reserve FAILED: orderId={}, reason={}, detail={}",
                 data.getOrderId(), reply.getReason(), reply.getDetail());
         orderCommandService.failOrder(data.getOrderId(), "RESERVE_INVENTORY",
                 reply.getReason() + ": " + reply.getDetail());
     }
 
-    private ReleaseInventoryCommand releaseInventory(PlaceOrderSagaData data) {
+    ReleaseInventoryCommand releaseInventory(PlaceOrderSagaData data) {
         log.info("Saga release inventory: orderId={}, reservationId={}",
                 data.getOrderId(), data.getReservationId());
         return new ReleaseInventoryCommand(data.getReservationId());
@@ -308,17 +313,17 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     // ── Step 2: Check account limit (BILL_TO_MOBILE) ────────────────────────────
 
-    private CheckAccountLimitCommand checkAccountLimit(PlaceOrderSagaData data) {
+    CheckAccountLimitCommand checkAccountLimit(PlaceOrderSagaData data) {
         log.info("Saga checkLimit: orderId={}, subscriberId={}, amount={} {}",
                 data.getOrderId(), data.getSubscriberId(), data.getAmount(), data.getCurrency());
         return new CheckAccountLimitCommand(data.getSubscriberId(), data.getAmount(), data.getCurrency());
     }
 
-    private void handleAccountLimitOk(PlaceOrderSagaData data, AccountLimitOk reply) {
+    void handleAccountLimitOk(PlaceOrderSagaData data, AccountLimitOk reply) {
         log.info("Saga checkLimit OK: orderId={}, subscriberId={}", data.getOrderId(), reply.getSubscriberId());
     }
 
-    private void handleAccountLimitExceeded(PlaceOrderSagaData data, AccountLimitExceeded reply) {
+    void handleAccountLimitExceeded(PlaceOrderSagaData data, AccountLimitExceeded reply) {
         log.warn("Saga checkLimit FAILED: orderId={}, reason={}, detail={}",
                 data.getOrderId(), reply.getReason(), reply.getDetail());
         orderCommandService.failOrder(data.getOrderId(), "CHECK_ACCOUNT_LIMIT",
@@ -327,20 +332,20 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     // ── Step 3: Allocate (BILL_TO_MOBILE) ───────────────────────────────────────
 
-    private AllocateInventoryCommand allocateInventory(PlaceOrderSagaData data) {
+    AllocateInventoryCommand allocateInventory(PlaceOrderSagaData data) {
         log.info("Saga allocate: orderId={}, offerCode={}, productType={}",
                 data.getOrderId(), data.getOfferCode(), data.getProductType());
         return new AllocateInventoryCommand(data.getOfferCode(), 1);
     }
 
-    private void handleInventoryAllocated(PlaceOrderSagaData data, InventoryAllocated reply) {
+    void handleInventoryAllocated(PlaceOrderSagaData data, InventoryAllocated reply) {
         log.info("Saga allocate OK: orderId={}, reservationId={}, type={}, key={}",
                 data.getOrderId(), reply.getReservationId(), reply.getProductType(), reply.getActivationKey());
         data.setReservationId(reply.getReservationId());
         data.setActivationKey(reply.getActivationKey());
     }
 
-    private void handleInventoryAllocationFailed(PlaceOrderSagaData data, InventoryAllocationFailed reply) {
+    void handleInventoryAllocationFailed(PlaceOrderSagaData data, InventoryAllocationFailed reply) {
         log.warn("Saga allocate FAILED: orderId={}, reason={}, detail={}",
                 data.getOrderId(), reply.getReason(), reply.getDetail());
         orderCommandService.failOrder(data.getOrderId(), "ALLOCATE_INVENTORY",
@@ -349,19 +354,19 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     // ── Step 4: Authorize billing (PAY_NOW) ─────────────────────────────────────
 
-    private AuthorizeBillingCommand authorizeBilling(PlaceOrderSagaData data) {
+    AuthorizeBillingCommand authorizeBilling(PlaceOrderSagaData data) {
         log.info("Saga authorize: orderId={}, amount={} {}",
                 data.getOrderId(), data.getAmount(), data.getCurrency());
         return new AuthorizeBillingCommand(data.getOrderId(), data.getSubscriberId(),
                 data.getAmount(), data.getCurrency(), data.getBillingMode());
     }
 
-    private void handleBillingAuthorized(PlaceOrderSagaData data, BillingAuthorized reply) {
+    void handleBillingAuthorized(PlaceOrderSagaData data, BillingAuthorized reply) {
         log.info("Saga authorize OK: orderId={}, authId={}", data.getOrderId(), reply.getAuthId());
         data.setAuthId(reply.getAuthId());
     }
 
-    private void handleBillingDeclined(PlaceOrderSagaData data, BillingDeclined reply) {
+    void handleBillingDeclined(PlaceOrderSagaData data, BillingDeclined reply) {
         log.warn("Saga authorize DECLINED: orderId={}, reason={}, detail={}",
                 data.getOrderId(), reply.getReason(), reply.getDetail());
         orderCommandService.failOrder(data.getOrderId(), "AUTHORIZE_BILLING",
@@ -370,16 +375,16 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     // ── Step 5: Commit inventory (PAY_NOW) ──────────────────────────────────────
 
-    private CommitInventoryCommand commitInventory(PlaceOrderSagaData data) {
+    CommitInventoryCommand commitInventory(PlaceOrderSagaData data) {
         log.info("Saga commit: orderId={}, reservationId={}", data.getOrderId(), data.getReservationId());
         return new CommitInventoryCommand(data.getReservationId());
     }
 
-    private void handleInventoryCommitted(PlaceOrderSagaData data, InventoryCommitted reply) {
+    void handleInventoryCommitted(PlaceOrderSagaData data, InventoryCommitted reply) {
         log.info("Saga commit OK: orderId={}, reservationId={}", data.getOrderId(), reply.getReservationId());
     }
 
-    private void handleInventoryCommitFailed(PlaceOrderSagaData data, InventoryCommitFailed reply) {
+    void handleInventoryCommitFailed(PlaceOrderSagaData data, InventoryCommitFailed reply) {
         log.warn("Saga commit FAILED: orderId={}, reason={}, detail={}",
                 data.getOrderId(), reply.getReason(), reply.getDetail());
         orderCommandService.failOrder(data.getOrderId(), "COMMIT_INVENTORY",
@@ -388,7 +393,7 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     // ── Step 6: Pre-pivot cancel checkpoint (local, both) ───────────────────────
 
-    private void prePivotCancelCheckpoint(PlaceOrderSagaData data) {
+    void prePivotCancelCheckpoint(PlaceOrderSagaData data) {
         if (orderCommandService.isCancelRequested(data.getOrderId())) {
             log.info("Saga cancel (pre-pivot): orderId={} — rolling back", data.getOrderId());
             orderCommandService.cancel(data.getOrderId(), "USER_CANCEL: before pivot");
@@ -399,17 +404,17 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     // ── Step 7: Capture billing (PAY_NOW pivot) ─────────────────────────────────
 
-    private CaptureBillingCommand captureBilling(PlaceOrderSagaData data) {
+    CaptureBillingCommand captureBilling(PlaceOrderSagaData data) {
         log.info("Saga capture (pivot): orderId={}, authId={}", data.getOrderId(), data.getAuthId());
         return new CaptureBillingCommand(data.getAuthId(), data.getAmount(), data.getCurrency());
     }
 
-    private void handleBillingCaptured(PlaceOrderSagaData data, BillingCaptured reply) {
+    void handleBillingCaptured(PlaceOrderSagaData data, BillingCaptured reply) {
         log.info("Saga capture OK: orderId={}, captureId={}", data.getOrderId(), reply.getCaptureId());
         data.setCaptureId(reply.getCaptureId());
     }
 
-    private void handleBillingCaptureFailed(PlaceOrderSagaData data, BillingCaptureFailed reply) {
+    void handleBillingCaptureFailed(PlaceOrderSagaData data, BillingCaptureFailed reply) {
         // Pivot did not commit (withFailure reply). Eventuate now rolls back the
         // prior holds; mark the order FAILED. Nothing was captured → no refund.
         log.warn("Saga capture DECLINED (rollback): orderId={}, reason={}, detail={}",
@@ -420,14 +425,14 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     // ── Step 8: Append to ledger (BILL_TO_MOBILE pivot) ─────────────────────────
 
-    private AppendToLedgerCommand appendToLedger(PlaceOrderSagaData data) {
+    AppendToLedgerCommand appendToLedger(PlaceOrderSagaData data) {
         log.info("Saga appendLedger (pivot): orderId={}, subscriberId={}, amount={} {}",
                 data.getOrderId(), data.getSubscriberId(), data.getAmount(), data.getCurrency());
         return new AppendToLedgerCommand(data.getOrderId(), data.getSubscriberId(),
                 data.getAmount(), data.getCurrency());
     }
 
-    private void handleLedgerAppended(PlaceOrderSagaData data, LedgerAppended reply) {
+    void handleLedgerAppended(PlaceOrderSagaData data, LedgerAppended reply) {
         log.info("Saga appendLedger OK: orderId={}, ledgerEntryId={}",
                 data.getOrderId(), reply.getLedgerEntryId());
         data.setLedgerEntryId(reply.getLedgerEntryId());
@@ -435,14 +440,14 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     // ── Step 9: Confirm (local, both) ───────────────────────────────────────────
 
-    private void confirmOrder(PlaceOrderSagaData data) {
+    void confirmOrder(PlaceOrderSagaData data) {
         log.info("Saga confirm (local): orderId={}", data.getOrderId());
         orderCommandService.confirmOrder(data.getOrderId(), data.getProductType());
     }
 
     // ── Step 10: Pre-fulfil cancel checkpoint (local, both) ─────────────────────
 
-    private void preFulfilCancelCheckpoint(PlaceOrderSagaData data) {
+    void preFulfilCancelCheckpoint(PlaceOrderSagaData data) {
         if (orderCommandService.isCancelRequested(data.getOrderId())) {
             // Post-pivot: cannot roll back the charge. Flip onto forward-recovery.
             log.info("Saga cancel (pre-fulfil): orderId={} — forward-recovering", data.getOrderId());
@@ -453,14 +458,14 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     // ── Step 11: Fulfil (both; skipped while forward-recovering) ────────────────
 
-    private FulfilOrderCommand fulfilOrder(PlaceOrderSagaData data) {
+    FulfilOrderCommand fulfilOrder(PlaceOrderSagaData data) {
         log.info("Saga fulfil: orderId={}, productType={}, termMonths={}",
                 data.getOrderId(), data.getProductType(), data.getTermMonths());
         return new FulfilOrderCommand(data.getOrderId(), data.getSubscriberId(),
                 data.getOfferCode(), data.getProductType(), data.getActivationKey(), data.getTermMonths());
     }
 
-    private void handleOrderFulfilled(PlaceOrderSagaData data, OrderFulfilled reply) {
+    void handleOrderFulfilled(PlaceOrderSagaData data, OrderFulfilled reply) {
         log.info("Saga fulfil OK: orderId={}, type={}, fulfilmentRef={}, validUntil={}",
                 data.getOrderId(), reply.getProductType(), reply.getFulfilmentRef(), reply.getValidUntil());
         data.setFulfilmentRef(reply.getFulfilmentRef());
@@ -471,7 +476,7 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
         data.setValidUntil(reply.getValidUntil());
     }
 
-    private void handleOrderFulfilmentFailed(PlaceOrderSagaData data, OrderFulfilmentFailed reply) {
+    void handleOrderFulfilmentFailed(PlaceOrderSagaData data, OrderFulfilmentFailed reply) {
         // Non-transient failure (success-outcome branch reply). No rollback —
         // flip onto forward-recovery: refund/reverse + release → CANCELLED_REFUNDED.
         log.warn("Saga fulfil FAILED (forward-recover): orderId={}, reason={}, detail={}",
@@ -480,7 +485,7 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
         data.setCancelReason(cap("FULFIL_FAILED: " + reply.getReason() + ": " + reply.getDetail()));
     }
 
-    private void handleOrderProvisioningFailed(PlaceOrderSagaData data, OrderProvisioningFailed reply) {
+    void handleOrderProvisioningFailed(PlaceOrderSagaData data, OrderProvisioningFailed reply) {
         // OTT provisioning failed (DD-27). Success-outcome reply, so NO compensation
         // and — unlike forward-recovery — NO refund: the charge stands. Park the
         // order in FULFILMENT_FAILED at finalize for admin re-drive. Distinct flag so
@@ -502,19 +507,19 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     // ── Step 12: Refund (PAY_NOW forward-recovery) ──────────────────────────────
 
-    private RefundBillingCommand refundBilling(PlaceOrderSagaData data) {
+    RefundBillingCommand refundBilling(PlaceOrderSagaData data) {
         log.info("Saga refund (forward-recovery): orderId={}, authId={}", data.getOrderId(), data.getAuthId());
         return new RefundBillingCommand(data.getAuthId(), data.getAmount(), data.getCurrency(),
                 data.getCancelReason());
     }
 
-    private void handleBillingRefunded(PlaceOrderSagaData data, BillingRefunded reply) {
+    void handleBillingRefunded(PlaceOrderSagaData data, BillingRefunded reply) {
         log.info("Saga refund OK: orderId={}, refundId={}", data.getOrderId(), reply.getRefundId());
     }
 
     // ── Step 13: Reverse ledger (BILL_TO_MOBILE forward-recovery) ───────────────
 
-    private ReverseLedgerCommand reverseLedger(PlaceOrderSagaData data) {
+    ReverseLedgerCommand reverseLedger(PlaceOrderSagaData data) {
         log.info("Saga reverseLedger (forward-recovery): orderId={}, ledgerEntryId={}",
                 data.getOrderId(), data.getLedgerEntryId());
         return new ReverseLedgerCommand(data.getLedgerEntryId(), data.getCancelReason());
@@ -522,7 +527,7 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
 
     // ── Step 15: Finalize (local, both) ─────────────────────────────────────────
 
-    private void finalizeOrder(PlaceOrderSagaData data) {
+    void finalizeOrder(PlaceOrderSagaData data) {
         if (data.isProvisioningFailed()) {
             // DD-27: OTT park — charge stands, no unwind. Branch on reply content,
             // never complete unconditionally.

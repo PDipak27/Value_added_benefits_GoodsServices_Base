@@ -21,7 +21,7 @@ RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination 
 FROM eclipse-temurin:17-jre
 WORKDIR /app
 
-# IST timezone (same fix as Dockerfile.lite). Without -Duser.timezone the JVM resolves the legacy
+# IST timezone. Without -Duser.timezone the JVM resolves the legacy
 # "Asia/Calcutta", which pgjdbc sends as `SET TimeZone` and postgres:18 rejects (Flyway fails).
 # NOTE: a JAVA_TOOL_OPTIONS set by k8s REPLACES this one, so the k8s ConfigMaps repeat the flag.
 ENV TZ=Asia/Kolkata

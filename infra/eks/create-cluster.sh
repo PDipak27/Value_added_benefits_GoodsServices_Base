@@ -35,7 +35,7 @@ eksctl create cluster -f "$RENDERED"
 
 echo "==> platform objects (namespace + gp3 StorageClass)"
 aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
-kubectl apply -f "$ROOT/k8s-full/platform/platform.yaml"
+kubectl apply -f "$ROOT/k8s-eks/platform/platform.yaml"
 
 echo "==> ECR repositories (scan on push + keep-last-10 lifecycle policy)"
 for s in $SERVICES; do
@@ -45,4 +45,4 @@ for s in $SERVICES; do
   aws ecr put-lifecycle-policy --repository-name "vabags/$s" --region "$AWS_REGION" \
     --lifecycle-policy-text "file://$HERE/ecr-lifecycle-policy.json" >/dev/null
 done
-echo "Cluster ready. Deploy via jenkins/Jenkinsfile.full, or: REGISTRY=... TAG=... k8s-full/scripts/deploy.sh"
+echo "Cluster ready. Deploy via jenkins/Jenkinsfile.eks, or: REGISTRY=... TAG=... k8s-eks/scripts/deploy.sh"

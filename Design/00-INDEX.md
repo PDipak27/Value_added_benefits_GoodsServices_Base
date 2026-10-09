@@ -13,4 +13,6 @@
 | 09 | [09-product-types-redesign.md](09-product-types-redesign.md) | Product-types redesign (DIGITAL/LICENSE/PHYSICAL, fulfilment-service) |
 | 10 | [10-backlog.md](10-backlog.md) | Backlog & implementation status (auth, query surface, platform, hardening) |
 | 11 | [11-deployment-k8s.md](11-deployment-k8s.md) | Local Kubernetes deployment — phased plan (containerize → k8s → CI/CD), concepts + interview crib |
+| 12 | [12-roadmap.md](12-roadmap.md) | Delivery & roadmap — CI/CD (GitHub Actions, Jenkins), EKS deployment, decisions, open work |
+| — | [VA-BAGS-Code-Walkthrough.docx](VA-BAGS-Code-Walkthrough.docx) | Code walkthrough: module map, order flow, saga, security, change recipes |
 | — | [diagrams.mmd](diagrams.mmd) | All Mermaid diagrams in one raw file (paste into mermaid.live) |

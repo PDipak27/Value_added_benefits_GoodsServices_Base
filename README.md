@@ -161,4 +161,8 @@ Full design lives in [`Design/`](Design/):
 | 07 | [07-infra-and-stack.md](Design/07-infra-and-stack.md) | Infra & stack, docker-compose services, repo layout |
 | 08 | [08-design-decisions.md](Design/08-design-decisions.md) | Design decisions (ADR-style) |
 | 09 | [09-product-types-redesign.md](Design/09-product-types-redesign.md) | Product-types redesign — three product types, fulfilment-service (RFC; partly superseded by DD-23) |
+| 10 | [10-backlog.md](Design/10-backlog.md) | Backlog & implementation status |
+| 11 | [11-deployment-k8s.md](Design/11-deployment-k8s.md) | Local Kubernetes (k3d) deployment walkthrough |
+| 12 | [12-roadmap.md](Design/12-roadmap.md) | Delivery & roadmap — CI/CD (GitHub Actions, Jenkins), EKS deployment, open work |
+| — | [VA-BAGS-Code-Walkthrough.docx](Design/VA-BAGS-Code-Walkthrough.docx) | Code walkthrough (module map, order flow, saga, security) |
 | — | [diagrams.mmd](Design/diagrams.mmd) | All Mermaid diagrams (paste into mermaid.live) |

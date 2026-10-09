@@ -45,7 +45,7 @@ class NotificationDeliveryIT {
 
     @Container
     @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:18");
 
     @Autowired NotificationEventConsumer consumer;
     @Autowired DeliveryRecordRepository deliveryRepo;

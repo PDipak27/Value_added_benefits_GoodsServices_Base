@@ -1,4 +1,4 @@
-// VA-BAGS FULL edition — cluster lifecycle job (create / delete) + nightly teardown.
+// VA-BAGS — cluster lifecycle job (create / delete) + nightly teardown.
 //
 // ACTION=create → infra/eks/create-cluster.sh (eksctl ClusterConfig, gp3 SC, ECR repos)
 // ACTION=delete → infra/eks/delete-cluster.sh (namespace first so EBS volumes + NLBs are freed)
