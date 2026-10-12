@@ -14,7 +14,9 @@ import org.springframework.security.web.server.SecurityWebFilterChain;
  * issuer-uri) and forwards the Bearer downstream (token relay — services re-validate).
  *
  * <ul>
- *   <li>Catalog browse ({@code /v1/offers/**}) is public.</li>
+ *   <li>Catalog browse ({@code GET /v1/offers/**}) and eligibility evaluate
+ *       ({@code POST /v1/offers/{code}:evaluate}) are public; catalog writes (create,
+ *       update, withdraw) require the {@code vab-admin} realm role.</li>
  *   <li>Back-office order actions (retry / complete / revoke) require the
  *       {@code vab-admin} realm role.</li>
  *   <li>Everything else routed here (orders, entitlements) requires a valid token.</li>
@@ -30,7 +32,11 @@ public class SecurityConfig {
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .authorizeExchange(ex -> ex
                         .pathMatchers("/actuator/**").permitAll()
-                        .pathMatchers("/v1/offers/**").permitAll()
+                        // Catalog: browse + eligibility evaluate are public; every other write
+                        // (create / update / :withdraw) is back-office and needs vab-admin.
+                        .pathMatchers(HttpMethod.GET, "/v1/offers/**").permitAll()
+                        .pathMatchers(HttpMethod.POST, "/v1/offers/*:evaluate").permitAll()
+                        .pathMatchers("/v1/offers/**").hasRole("vab-admin")
                         .pathMatchers(HttpMethod.POST,
                                 "/v1/orders/*/retry-fulfilment",
                                 "/v1/orders/*/complete-fulfilment",

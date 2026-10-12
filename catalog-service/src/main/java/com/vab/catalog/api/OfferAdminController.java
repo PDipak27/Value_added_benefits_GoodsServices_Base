@@ -12,8 +12,9 @@ import org.springframework.web.bind.annotation.*;
  * (DD-17) via {@link OfferAdminService}, so a change is visible on the next read.
  *
  * <p>Lives under {@code /v1/offers} so the existing gateway route
- * ({@code /v1/offers/**} → catalog) covers it. Authn/authz on these privileged
- * endpoints is deferred to the gateway/OIDC iteration.
+ * ({@code /v1/offers/**} → catalog) covers it. The gateway requires the
+ * {@code vab-admin} realm role for these writes (only GET and {@code :evaluate} are
+ * public at the edge); catalog-service itself is internal and does not re-check.
  */
 @RestController
 @RequestMapping("/v1/offers")
