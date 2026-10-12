@@ -20,7 +20,7 @@ class OrderCancelE2E extends E2EBase {
         // Unique subscriber: OTT_HOTSTAR_3M is a benefit, so a prior completed order
         // for the same subscriber+offer would trip the entitlement-uniqueness 409 (§B1).
         String orderId = placeOrder("sub-cancel-" + UUID.randomUUID(),
-                "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+                "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", "PAY_NOW");
 
         // Best-effort + race-tolerant: 202 if the cancel lands while the saga is still
         // in-flight, or 409 if the (fast-succeeding) order already reached a terminal
@@ -36,7 +36,7 @@ class OrderCancelE2E extends E2EBase {
 
     @Test
     void cancel_after_terminal_is_409() {
-        String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+        String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
         int code = authed()

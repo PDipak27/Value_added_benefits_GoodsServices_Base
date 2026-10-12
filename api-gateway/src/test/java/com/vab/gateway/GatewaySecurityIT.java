@@ -114,6 +114,40 @@ class GatewaySecurityIT {
         client.get().uri("/actuator/health").exchange().expectStatus().isOk();
     }
 
+    /** Actuator info is public as well (build/app info only). */
+    @Test
+    void actuator_info_is_public() {
+        client.get().uri("/actuator/info").exchange().expectStatus().isOk();
+    }
+
+    /** Route injection is impossible: anonymous POST to the gateway route-admin endpoint is 401 and nothing is routed. */
+    @Test
+    void anonymous_cannot_create_gateway_route() {
+        client.post().uri("/actuator/gateway/routes/evil")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"uri\":\"http://evil.example\",\"predicates\":[{\"name\":\"Path\",\"args\":{\"_genkey_0\":\"/v1/offers/**\"}}]}")
+                .exchange()
+                .expectStatus().isUnauthorized();
+        client.post().uri("/actuator/gateway/refresh").exchange().expectStatus().isUnauthorized();
+    }
+
+    /** The gateway actuator endpoint is not exposed at all: even an admin gets 404 for route listing and route creation. */
+    @Test
+    void gateway_actuator_endpoint_is_not_exposed() {
+        client.mutateWith(admin()).get().uri("/actuator/gateway/routes").exchange().expectStatus().isNotFound();
+        client.mutateWith(admin()).post().uri("/actuator/gateway/routes/evil")
+                .contentType(MediaType.APPLICATION_JSON).bodyValue("{\"uri\":\"http://evil.example\"}")
+                .exchange().expectStatus().isNotFound();
+    }
+
+    /** Other actuator paths are back-office: anonymous 401, subscriber 403. */
+    @ParameterizedTest
+    @ValueSource(strings = {"/actuator/env", "/actuator/metrics", "/actuator/beans"})
+    void non_public_actuator_paths_need_admin(String path) {
+        client.get().uri(path).exchange().expectStatus().isUnauthorized();
+        client.mutateWith(subscriber()).get().uri(path).exchange().expectStatus().isForbidden();
+    }
+
     // ── Authenticated surface ───────────────────────────────────────────────
 
     /** Order and entitlement reads without a token are rejected at the edge with 401 (never routed). */

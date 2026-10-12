@@ -36,6 +36,10 @@ post-pivot fulfil failure or late cancel **forward-recovers** to `CANCELLED_REFU
 | `SW_ANTIVIRUS_1Y` | SOFTWARE_LICENSE | 499 | BASIC | IN | — | MINIMAL | PUBLISHED |
 | `ACC_BUDS_PRO` | PHYSICAL_GOOD | 1499 | PREMIUM | IN | 24 | FULL | PUBLISHED |
 | `ACC_POWERBANK_20K` | PHYSICAL_GOOD | 899 | BASIC | IN | — | MINIMAL | PUBLISHED |
+| `ACC_CHARGER_30W` | PHYSICAL_GOOD | 499 | BASIC | IN | — | MINIMAL | PUBLISHED |
+| `ACC_DEMO_DECLINE` | PHYSICAL_GOOD | 1500 | BASIC | IN | — | MINIMAL | PUBLISHED (demo: authorize decline / credit limit) |
+| `ACC_DEMO_HARDDECLINE` | PHYSICAL_GOOD | 777 | BASIC | IN | — | MINIMAL | PUBLISHED (demo: capture hard-decline) |
+| `ACC_DEMO_DELIVERYFAIL` | PHYSICAL_GOOD | 499 | BASIC | IN | — | MINIMAL | PUBLISHED (demo: delivery failure) |
 | `OTT_LEGACY_3M` | DIGITAL_SUBSCRIPTION | 399 | BASIC | IN | — | NONE | **WITHDRAWN** |
 
 **Inventory items** (Postgres `inventory.inventory_items`) — **all three** product
@@ -45,6 +49,7 @@ types are now finite and have a row (DD-23); `DIGITAL_SUBSCRIPTION` is a seeded 
 |---|---|---|---|---|---|
 | `ACC_BUDS_PRO` | PHYSICAL_GOOD | 30 | 0 | 0 | stock count |
 | `ACC_POWERBANK_20K` | PHYSICAL_GOOD | **5** | 0 | 0 | low stock — exhaustion test |
+| `ACC_CHARGER_30W`, `ACC_DEMO_DECLINE`, `ACC_DEMO_HARDDECLINE`, `ACC_DEMO_DELIVERYFAIL` | PHYSICAL_GOOD | 100000 | 0 | 0 | V6 — large stock for repeated e2e runs |
 | `SW_MSOFFICE_1Y` | SOFTWARE_LICENSE | 5 | 0 | 0 | 5 keys in `license_keys` |
 | `SW_ANTIVIRUS_1Y` | SOFTWARE_LICENSE | **3** | 0 | 0 | **3 keys** — pool-exhaustion test |
 | `OTT_NETFLIX_6M` | DIGITAL_SUBSCRIPTION | 100 | 0 | 0 | seeded count (V4) |
@@ -66,8 +71,13 @@ types are now finite and have a row (DD-23); `DIGITAL_SUBSCRIPTION` is a seeded 
 > move a count and `SOFTWARE_LICENSE` takes one concrete key (FREE → ALLOCATED), returned
 > as `activationKey`. **All three types are finite**, so all three can exhaust.
 > Failure reasons flavour by type: `OUT_OF_STOCK` (physical/digital count) /
-> `POOL_EXHAUSTED` (license). An offer with no inventory row (e.g. the withdrawn
-> `OTT_LEGACY_3M`) ⇒ `ITEM_NOT_FOUND`.
+> `POOL_EXHAUSTED` (license). An offer with no inventory row ⇒ `ITEM_NOT_FOUND`
+> (no longer reachable through the API: placement now rejects offers catalog doesn't publish with 422).
+
+**Prices are verified at placement:** order-service compares `amount`/`currency` with the
+catalog offer — a different price ⇒ `409`, an unknown/withdrawn offer ⇒ `422`, catalog
+unreachable ⇒ `503` (fail-closed). The billing/fulfilment triggers below are therefore
+reached through the `ACC_DEMO_*` offers, which are *priced* at the trigger values.
 
 **Billing rules (DD-23/DD-26):** for `PAY_NOW`, `amount > 999` ⇒ `BillingDeclined` at the
 authorize step (triggers compensation → `FAILED`); a capture `amount == 777` ⇒
@@ -145,10 +155,10 @@ non-transient post-pivot fulfil failure (or late cancel) does not roll back — 
 | **Happy — DIGITAL (postpaid)** | `OTT_NETFLIX_6M` / DIGITAL_SUBSCRIPTION | BILL_TO_MOBILE | 599 | checkLimit → allocate → appendLedger → confirm → fulfil (entitlement) | **COMPLETED** | `externalRef` |
 | **Happy — PHYSICAL (prepaid)** | `ACC_POWERBANK_20K` / PHYSICAL_GOOD | PAY_NOW | 899 | reserve → authorize → commit → capture → confirm → fulfil (shipment) | **COMPLETED** | `trackingRef` |
 | **Happy — LICENSE (prepaid)** | `SW_ANTIVIRUS_1Y` / SOFTWARE_LICENSE | PAY_NOW | 499 | reserve (key) → authorize → commit → capture → confirm → fulfil (echo key) | **COMPLETED** | `activationKey` |
-| **Billing decline (PAY_NOW)** | `ACC_POWERBANK_20K` / PHYSICAL_GOOD | PAY_NOW | 1500 | reserve OK → authorize declines → release reservation (LIFO) | **FAILED** | — |
-| **Capture hard-decline (PAY_NOW, DD-26)** | `SW_ANTIVIRUS_1Y` / SOFTWARE_LICENSE | PAY_NOW | 777 | reserve → authorize → commit → capture **withFailure** (pivot) → rollback holds | **FAILED** | — (no charge) |
-| **Fulfil failure → forward-recovery (DD-26)** | `OFF-FAIL` / PHYSICAL_GOOD | PAY_NOW | 499 | reserve → authorize → commit → capture → confirm → fulfil **DELIVERY_FAILED** → refund → release | **CANCELLED_REFUNDED** | — (refunded) |
-| **Credit-limit exceeded (postpaid)** | `ACC_POWERBANK_20K` / PHYSICAL_GOOD | BILL_TO_MOBILE | 1500 | checkAccountLimit ⇒ `CREDIT_LIMIT_EXCEEDED` (before allocate) | **FAILED** | — |
+| **Billing decline (PAY_NOW)** | `ACC_DEMO_DECLINE` / PHYSICAL_GOOD | PAY_NOW | 1500 | reserve OK → authorize declines → release reservation (LIFO) | **FAILED** | — |
+| **Capture hard-decline (PAY_NOW, DD-26)** | `ACC_DEMO_HARDDECLINE` / PHYSICAL_GOOD | PAY_NOW | 777 | reserve → authorize → commit → capture **withFailure** (pivot) → rollback holds | **FAILED** | — (no charge) |
+| **Fulfil failure → forward-recovery (DD-26)** | `ACC_DEMO_DELIVERYFAIL` / PHYSICAL_GOOD | PAY_NOW | 499 | reserve → authorize → commit → capture → confirm → fulfil **DELIVERY_FAILED** → refund → release | **CANCELLED_REFUNDED** | — (refunded) |
+| **Credit-limit exceeded (postpaid)** | `ACC_DEMO_DECLINE` / PHYSICAL_GOOD | BILL_TO_MOBILE | 1500 | checkAccountLimit ⇒ `CREDIT_LIMIT_EXCEEDED` (before allocate) | **FAILED** | — |
 | **Account suspended (postpaid)** | `OTT_NETFLIX_6M` / DIGITAL_SUBSCRIPTION (`subscriberId=sub-suspended`) | BILL_TO_MOBILE | 599 | checkAccountLimit ⇒ `ACCOUNT_SUSPENDED` | **FAILED** | — |
 | **License pool exhausted** | `SW_ANTIVIRUS_1Y` / SOFTWARE_LICENSE | PAY_NOW | 499 | 4th order (pool=3) → reserve ⇒ `POOL_EXHAUSTED` | **FAILED** | — |
 | **Physical out of stock** | `ACC_POWERBANK_20K` / PHYSICAL_GOOD | PAY_NOW | 899 | 6th order (stock=5) → reserve ⇒ `OUT_OF_STOCK` | **FAILED** | — |
@@ -168,6 +178,10 @@ non-transient post-pivot fulfil failure (or late cancel) does not roll back — 
 |---|---|---|
 | Missing key | (no `Idempotency-Key`) | 400 |
 | Invalid key | `Idempotency-Key: not-a-uuid` | 400 (must be UUID) |
+| Bad body | missing `offerCode`/`currency`, `amount ≤ 0`, unknown `billingMode` | 400 |
+| Tampered price | `OTT_HOTSTAR_3M` with `amount: 1` | 409 (price mismatch) |
+| Unknown offer | `offerCode: NOPE` (or withdrawn `OTT_LEGACY_3M`) | 422 |
+| Catalog down | stop catalog-service, then place | 503 (fail-closed) |
 
 ## Orders — query paths
 
@@ -186,12 +200,12 @@ non-transient post-pivot fulfil failure (or late cancel) does not roll back — 
 3. **Orders – Command → Place order** for each product type, in both `PAY_NOW` and
    `BILL_TO_MOBILE` modes (captures `{{orderId}}`); poll **Query → Get order by id**
    until `COMPLETED`; verify the per-type artifact.
-4. **PAY_NOW billing decline** (physical, amount 1500) → poll to `FAILED`; verify the
+4. **PAY_NOW billing decline** (`ACC_DEMO_DECLINE`, 1500) → poll to `FAILED`; verify the
    reservation returns. Then **BILL_TO_MOBILE** credit-limit (amount 1500) and
    suspended-account (`sub-suspended`) cases → `FAILED` before any hold.
-5. **PAY_NOW capture hard-decline** (license/digital, amount 777, DD-26) → poll to
+5. **PAY_NOW capture hard-decline** (`ACC_DEMO_HARDDECLINE`, 777, DD-26) → poll to
    `FAILED`; verify the holds roll back (nothing captured, no artifact).
-6. **Fulfil failure → forward-recovery** (offer code containing `FAIL`, DD-26) → poll to
+6. **Fulfil failure → forward-recovery** (`ACC_DEMO_DELIVERYFAIL`, DD-26) → poll to
    `CANCELLED_REFUNDED`; verify the charge is refunded and inventory released.
 7. **User cancel** (`POST /v1/orders/{id}/cancel`) → pre-pivot lands `CANCELLED`;
    post-pivot/pre-fulfil lands `CANCELLED_REFUNDED`; once terminal → `409`.

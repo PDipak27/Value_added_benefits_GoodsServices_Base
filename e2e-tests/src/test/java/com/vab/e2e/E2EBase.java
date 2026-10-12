@@ -185,31 +185,46 @@ abstract class E2EBase {
 
     // ── Order helpers (through the gateway, authenticated) ───────────────────
 
-    /** Place an order as {@code subscriberId}; asserts 202 + Location and returns the new orderId. */
-    protected String placeOrder(String subscriberId, String offerCode, String productType,
-                                long amount, String billingMode) {
-        return placeOrder(subscriberId, offerCode, productType, amount, billingMode,
-                UUID.randomUUID().toString());
+    /**
+     * Place an order as {@code subscriberId} at the offer's current catalog price; asserts
+     * 202 + Location and returns the new orderId. (order-service verifies the price against
+     * catalog, so tests no longer pick amounts — billing demo triggers are priced offers.)
+     */
+    protected String placeOrder(String subscriberId, String offerCode, String productType, String billingMode) {
+        return placeOrder(subscriberId, offerCode, productType, billingMode, UUID.randomUUID().toString());
     }
 
     protected String placeOrder(String subscriberId, String offerCode, String productType,
-                                long amount, String billingMode, String idempotencyKey) {
+                                String billingMode, String idempotencyKey) {
+        return placeOrderRequest(subscriberId, orderBody(offerCode, productType, billingMode), idempotencyKey)
+                .then().statusCode(202)
+                .header("Location", org.hamcrest.Matchers.containsString("/v1/orders/"))
+                .extract().path("orderId");
+    }
+
+    /** An order body priced from the public catalog detail (amount, currency, priceSnapshotId). */
+    protected Map<String, Object> orderBody(String offerCode, String productType, String billingMode) {
+        JsonPath offer = given().baseUri(GATEWAY)
+                .when().get("/v1/offers/{code}", offerCode)
+                .then().statusCode(200)
+                .extract().jsonPath();
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("offerCode", offerCode);
         body.put("productType", productType);
-        body.put("priceSnapshotId", "ps-e2e");
-        body.put("amount", amount);
-        body.put("currency", "INR");
+        body.put("priceSnapshotId", offer.getString("priceSnapshotId"));
+        body.put("amount", offer.getLong("amount"));
+        body.put("currency", offer.getString("currency"));
         body.put("billingMode", billingMode);
+        return body;
+    }
 
+    /** Raw placement (no status assertion) for negative cases such as a tampered price. */
+    protected Response placeOrderRequest(String subscriberId, Map<String, Object> body, String idempotencyKey) {
         return asSubscriber(subscriberId)
                 .header("Idempotency-Key", idempotencyKey)
                 .contentType(JSON)
                 .body(body)
-                .when().post("/v1/orders")
-                .then().statusCode(202)
-                .header("Location", org.hamcrest.Matchers.containsString("/v1/orders/"))
-                .extract().path("orderId");
+                .when().post("/v1/orders");
     }
 
     protected JsonPath getOrder(String orderId) {

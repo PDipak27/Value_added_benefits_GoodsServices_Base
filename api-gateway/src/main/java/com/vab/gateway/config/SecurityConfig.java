@@ -14,6 +14,7 @@ import org.springframework.security.web.server.SecurityWebFilterChain;
  * issuer-uri) and forwards the Bearer downstream (token relay — services re-validate).
  *
  * <ul>
+ *   <li>Actuator: only health (probes) and info are public; anything else needs {@code vab-admin}.</li>
  *   <li>Catalog browse ({@code GET /v1/offers/**}) and eligibility evaluate
  *       ({@code POST /v1/offers/{code}:evaluate}) are public; catalog writes (create,
  *       update, withdraw) require the {@code vab-admin} realm role.</li>
@@ -31,7 +32,10 @@ public class SecurityConfig {
         http
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .authorizeExchange(ex -> ex
-                        .pathMatchers("/actuator/**").permitAll()
+                        // Probes + info only; every other actuator endpoint is back-office. (The
+                        // gateway route-admin endpoint is not exposed at all — see application.yml.)
+                        .pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
+                        .pathMatchers("/actuator/**").hasRole("vab-admin")
                         // Catalog: browse + eligibility evaluate are public; every other write
                         // (create / update / :withdraw) is back-office and needs vab-admin.
                         .pathMatchers(HttpMethod.GET, "/v1/offers/**").permitAll()

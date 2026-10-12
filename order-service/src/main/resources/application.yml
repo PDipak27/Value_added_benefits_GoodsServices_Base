@@ -75,7 +75,9 @@ management:
         include: health,info,metrics
   endpoint:
     health:
-      show-details: always
+      # Status is public (probes); component details (DB/Mongo/Kafka) only for vab-admin.
+      show-details: when-authorized
+      roles: vab-admin
 
 logging:
   level:

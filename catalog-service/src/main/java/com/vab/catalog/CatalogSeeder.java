@@ -15,9 +15,9 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 
 /**
- * Seeds the walking-skeleton catalog into MongoDB on startup when the collection
- * is empty (DD-16) — replaces the former Flyway-seeded {@code catalog.offers}
- * table. Idempotent: a non-empty collection is left untouched.
+ * Seeds the walking-skeleton catalog into MongoDB on startup (DD-16) — replaces the
+ * former Flyway-seeded {@code catalog.offers} table. Idempotent per offer: only offers
+ * whose code is absent are inserted; existing (possibly admin-edited) offers are untouched.
  */
 @Component
 public class CatalogSeeder implements ApplicationRunner {
@@ -32,17 +32,12 @@ public class CatalogSeeder implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) {
-        if (offers.count() > 0) {
-            log.debug("Catalog already seeded ({} offers) — skipping", offers.count());
-            return;
-        }
-
         // Offers across the three product types (Design/09). All three FINITE types
         // align 1:1 with the inventory seed: PHYSICAL_GOOD → stock count,
         // SOFTWARE_LICENSE → key pool, DIGITAL_SUBSCRIPTION → entitlement count
         // (made finite in inventory V4). OTT_LEGACY_3M is withdrawn and has no
         // inventory row (exercises the withdrawn/ITEM_NOT_FOUND paths).
-        offers.saveAll(List.of(
+        List<Offer> seed = List.of(
             // ── DIGITAL_SUBSCRIPTION (finite entitlement count; inventory V4/V5) ─
             new Offer("OTT_NETFLIX_6M", "Netflix 6-month bundle",
                     "Six months of Netflix on us.", ProductType.DIGITAL_SUBSCRIPTION, 599, "INR",
@@ -88,12 +83,47 @@ public class CatalogSeeder implements ApplicationRunner {
                     "20,000 mAh fast-charge power bank (limited stock).", ProductType.PHYSICAL_GOOD, 899, "INR",
                     "ps_2026_05_powerbank20k", OfferStatus.PUBLISHED,
                     PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
+            new Offer("ACC_CHARGER_30W", "30W fast charger",
+                    "USB-C 30W fast charger.", ProductType.PHYSICAL_GOOD, 499, "INR",
+                    "ps_2026_10_charger30w", OfferStatus.PUBLISHED,
+                    PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
+            // Billing demo triggers (DD-26). Order prices are verified against catalog, so
+            // the triggers are offers *priced* at the trigger values (inventory: V6):
+            // > 999 → PAY_NOW authorize declines (and exceeds the default BILL_TO_MOBILE
+            // credit limit of 1000); exactly 777 → capture hard-declines at the pivot.
+            new Offer("ACC_DEMO_DECLINE", "Demo: billing decline",
+                    "Priced above the authorize threshold to exercise a declined payment.",
+                    ProductType.PHYSICAL_GOOD, 1500, "INR",
+                    "ps_2026_10_demodecline", OfferStatus.PUBLISHED,
+                    PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
+            new Offer("ACC_DEMO_HARDDECLINE", "Demo: capture hard-decline",
+                    "Priced at 777 to exercise a capture failure at the saga pivot.",
+                    ProductType.PHYSICAL_GOOD, 777, "INR",
+                    "ps_2026_10_demoharddecline", OfferStatus.PUBLISHED,
+                    PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
+            // Fulfilment demo trigger: an offerCode containing "FAIL" makes fulfil reply
+            // DELIVERY_FAILED after the pivot → forward-recovery to CANCELLED_REFUNDED.
+            new Offer("ACC_DEMO_DELIVERYFAIL", "Demo: delivery failure",
+                    "Fulfilment fails after payment to exercise refund + release (forward recovery).",
+                    ProductType.PHYSICAL_GOOD, 499, "INR",
+                    "ps_2026_10_demodeliveryfail", OfferStatus.PUBLISHED,
+                    PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
             // ── Withdrawn (no inventory) ─────────────────────────────────────
             new Offer("OTT_LEGACY_3M", "Legacy 3-month bundle (withdrawn)",
                     "No longer offered.", ProductType.DIGITAL_SUBSCRIPTION, 399, "INR",
                     "ps_2025_legacy3m", OfferStatus.WITHDRAWN,
                     PlanTier.BASIC, "IN", null, KycLevel.NONE)
-        ));
-        log.info("Seeded {} catalog offers into MongoDB", offers.count());
+        );
+
+        // Insert-if-absent per offer (not "only when empty"), so offers added to the seed
+        // later reach existing databases, while admin edits to seeded offers are kept.
+        List<Offer> missing = seed.stream().filter(o -> !offers.existsById(o.getOfferCode())).toList();
+        if (missing.isEmpty()) {
+            log.debug("Catalog seed already present ({} offers) — nothing to add", offers.count());
+            return;
+        }
+        offers.saveAll(missing);
+        log.info("Seeded {} missing catalog offer(s) into MongoDB: {}", missing.size(),
+                missing.stream().map(Offer::getOfferCode).toList());
     }
 }

@@ -8,6 +8,8 @@ import com.vab.order.command.service.OrderCommandService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -139,6 +141,36 @@ class OrderCommandControllerTest {
                     .andExpect(status().isBadRequest());
         }
         verifyNoInteractions(commandService);
+    }
+
+    /** Malformed bodies are 400 before any lookup: missing offerCode/currency, zero or negative amount, unknown billingMode. */
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{\"amount\":499,\"currency\":\"INR\",\"billingMode\":\"PAY_NOW\"}",
+            "{\"offerCode\":\"OTT_NETFLIX_6M\",\"amount\":0,\"currency\":\"INR\",\"billingMode\":\"PAY_NOW\"}",
+            "{\"offerCode\":\"OTT_NETFLIX_6M\",\"amount\":-599,\"currency\":\"INR\",\"billingMode\":\"PAY_NOW\"}",
+            "{\"offerCode\":\"OTT_NETFLIX_6M\",\"amount\":599,\"billingMode\":\"PAY_NOW\"}",
+            "{\"offerCode\":\"OTT_NETFLIX_6M\",\"amount\":599,\"currency\":\"INR\",\"billingMode\":\"FREE\"}",
+            "{\"offerCode\":\"OTT_NETFLIX_6M\",\"amount\":599,\"currency\":\"INR\"}"})
+    void place_with_invalid_body_is_400(String body) throws Exception {
+        loginAs("sub-premium");
+
+        mvc().perform(post("/v1/orders").header("Idempotency-Key", IDEM)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(commandService);
+    }
+
+    /** Catalog-verification outcomes raised by the service keep their status: 409 price mismatch, 422 unknown offer, 503 catalog down. */
+    @ParameterizedTest
+    @ValueSource(ints = {409, 422, 503})
+    void place_catalog_verification_statuses_pass_through(int code) throws Exception {
+        loginAs("sub-premium");
+        when(commandService.placeOrder(any())).thenThrow(new ResponseStatusException(HttpStatus.valueOf(code)));
+
+        mvc().perform(post("/v1/orders").header("Idempotency-Key", IDEM)
+                        .contentType(MediaType.APPLICATION_JSON).content(PLACE_BODY))
+                .andExpect(status().is(code));
     }
 
     /** A valid token with no subscriberId claim (e.g. a service/admin token) cannot place an order: 403. */

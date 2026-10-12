@@ -39,7 +39,7 @@ import static org.mockito.Mockito.*;
 
 /**
  * Write-side behaviour of the Order aggregate service: idempotency, catalog
- * product-type resolution (fail-open), and the find → mutate → save → publish
+ * verification (price fail-closed, productType/term from catalog), and the find → mutate → save → publish
  * shape of each saga callback. All collaborators are mocked.
  */
 @ExtendWith(MockitoExtension.class)
@@ -69,6 +69,11 @@ class OrderCommandServiceTest {
                 "px-1", 500, "INR", "PAY_NOW", "idem-1");
     }
 
+    /** Catalog's view of OFF-1 at the price placeCmd() sends (500 INR). */
+    private static CatalogClient.OfferDetail offer(String productType, Integer termMonths) {
+        return new CatalogClient.OfferDetail(productType, termMonths, 500L, "INR", "ps-catalog-1");
+    }
+
     /** Capture the events published for the given aggregate id. */
     @SuppressWarnings({"unchecked", "rawtypes"})
     private List<DomainEvent> publishedEvents() {
@@ -96,7 +101,7 @@ class OrderCommandServiceTest {
             when(idempotencyRepo.findBySubscriberIdAndIdempotencyKey("sub-1", "idem-1"))
                     .thenReturn(Optional.empty());
             when(catalogClient.resolveOffer("OFF-1"))
-                    .thenReturn(new CatalogClient.OfferDetail("PHYSICAL_GOOD", null));
+                    .thenReturn(offer("PHYSICAL_GOOD", null));
 
             String orderId = service.placeOrder(placeCmd("PHYSICAL_GOOD"));
 
@@ -117,7 +122,7 @@ class OrderCommandServiceTest {
                     .thenReturn(Optional.empty());
             // Client claimed DIGITAL but catalog (authoritative) says SOFTWARE_LICENSE.
             when(catalogClient.resolveOffer("OFF-1"))
-                    .thenReturn(new CatalogClient.OfferDetail("SOFTWARE_LICENSE", 12));
+                    .thenReturn(offer("SOFTWARE_LICENSE", 12));
 
             service.placeOrder(placeCmd("DIGITAL_SUBSCRIPTION"));
 
@@ -126,17 +131,76 @@ class OrderCommandServiceTest {
             assertThat(saved.getValue().getProductType()).isEqualTo("SOFTWARE_LICENSE");
         }
 
+        /** Catalog unreachable → 503 (price integrity is fail-closed): nothing persisted, published or started. */
         @Test
-        void catalog_unreachable_keeps_client_product_type_fail_open() {
+        void catalog_unreachable_rejects_with_503_and_writes_nothing() {
             when(idempotencyRepo.findBySubscriberIdAndIdempotencyKey("sub-1", "idem-1"))
                     .thenReturn(Optional.empty());
-            when(catalogClient.resolveOffer("OFF-1")).thenReturn(null); // fail-open
+            when(catalogClient.resolveOffer("OFF-1"))
+                    .thenThrow(new CatalogClient.CatalogUnavailableException("OFF-1", new RuntimeException("timeout")));
 
-            service.placeOrder(placeCmd("DIGITAL_SUBSCRIPTION"));
+            assertThatThrownBy(() -> service.placeOrder(placeCmd("DIGITAL_SUBSCRIPTION")))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .hasMessageContaining("503");
+            verifyNoInteractions(orderRepo, publisher, sagaInstanceFactory);
+            verify(idempotencyRepo, never()).save(any());
+        }
+
+        /** An offer catalog doesn't publish (unknown or withdrawn) is rejected with 422 before anything is written. */
+        @Test
+        void unknown_or_withdrawn_offer_is_rejected_422() {
+            when(idempotencyRepo.findBySubscriberIdAndIdempotencyKey("sub-1", "idem-1"))
+                    .thenReturn(Optional.empty());
+            when(catalogClient.resolveOffer("OFF-1")).thenReturn(null);
+
+            assertThatThrownBy(() -> service.placeOrder(placeCmd("DIGITAL_SUBSCRIPTION")))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .hasMessageContaining("422");
+            verifyNoInteractions(orderRepo, publisher, sagaInstanceFactory);
+        }
+
+        /** Price tampering / stale price: a client amount different from catalog's is a 409 and nothing is written. */
+        @Test
+        void amount_different_from_catalog_price_is_rejected_409() {
+            when(idempotencyRepo.findBySubscriberIdAndIdempotencyKey("sub-1", "idem-1"))
+                    .thenReturn(Optional.empty());
+            when(catalogClient.resolveOffer("OFF-1"))
+                    .thenReturn(new CatalogClient.OfferDetail("PHYSICAL_GOOD", null, 1499L, "INR", "ps-catalog-1"));
+
+            assertThatThrownBy(() -> service.placeOrder(placeCmd("PHYSICAL_GOOD")))   // client sends 500
+                    .isInstanceOf(ResponseStatusException.class)
+                    .hasMessageContaining("409")
+                    .hasMessageContaining("1499");
+            verifyNoInteractions(orderRepo, publisher, sagaInstanceFactory);
+        }
+
+        /** Same amount in a different currency is still a price mismatch: 409. */
+        @Test
+        void currency_different_from_catalog_is_rejected_409() {
+            when(idempotencyRepo.findBySubscriberIdAndIdempotencyKey("sub-1", "idem-1"))
+                    .thenReturn(Optional.empty());
+            when(catalogClient.resolveOffer("OFF-1"))
+                    .thenReturn(new CatalogClient.OfferDetail("PHYSICAL_GOOD", null, 500L, "USD", "ps-catalog-1"));
+
+            assertThatThrownBy(() -> service.placeOrder(placeCmd("PHYSICAL_GOOD")))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .hasMessageContaining("409");
+            verifyNoInteractions(orderRepo);
+        }
+
+        /** The order records catalog's priceSnapshotId (what was actually verified), not the client-sent one. */
+        @Test
+        void records_catalog_price_snapshot_id() {
+            when(idempotencyRepo.findBySubscriberIdAndIdempotencyKey("sub-1", "idem-1"))
+                    .thenReturn(Optional.empty());
+            when(catalogClient.resolveOffer("OFF-1")).thenReturn(offer("PHYSICAL_GOOD", null));
+
+            service.placeOrder(placeCmd("PHYSICAL_GOOD"));   // client sends px-1
 
             ArgumentCaptor<Order> saved = ArgumentCaptor.forClass(Order.class);
             verify(orderRepo).saveAndFlush(saved.capture());
-            assertThat(saved.getValue().getProductType()).isEqualTo("DIGITAL_SUBSCRIPTION");
+            assertThat(saved.getValue().getPriceSnapshotId()).isEqualTo("ps-catalog-1");
+            assertThat(saved.getValue().getAmount()).isEqualTo(500);
         }
 
         @Test
@@ -144,7 +208,7 @@ class OrderCommandServiceTest {
             when(idempotencyRepo.findBySubscriberIdAndIdempotencyKey("sub-1", "idem-1"))
                     .thenReturn(Optional.empty());
             when(catalogClient.resolveOffer("OFF-1"))
-                    .thenReturn(new CatalogClient.OfferDetail("DIGITAL_SUBSCRIPTION", 6));
+                    .thenReturn(offer("DIGITAL_SUBSCRIPTION", 6));
 
             service.placeOrder(placeCmd("DIGITAL_SUBSCRIPTION"));
 
@@ -314,6 +378,133 @@ class OrderCommandServiceTest {
             service.applyEntitlementRevoked("ord-1");
 
             verify(orderRepo, never()).saveAndFlush(any());
+            verifyNoInteractions(publisher);
+        }
+    }
+
+    /** DD-27 admin back-office: park, re-drive (and its async replies), manual complete. */
+    @Nested
+    class ReDrive {
+
+        private Order parked() {
+            Order o = Order.place("ord-p", "sub-1", "OTT_NETFLIX_6M", "DIGITAL_SUBSCRIPTION", "px-1", 599, "INR", "PAY_NOW");
+            o.fulfilmentFailed("PROVISIONING_UNAVAILABLE: HTTP 503");
+            return o;
+        }
+
+        private Order completed() {
+            Order o = Order.place("ord-p", "sub-1", "OTT_NETFLIX_6M", "DIGITAL_SUBSCRIPTION", "px-1", 599, "INR", "PAY_NOW");
+            o.complete(Instant.now(), null, null, "OTT-1");
+            return o;
+        }
+
+        /** The saga's provisioning-failure branch parks the order (FULFILMENT_FAILED, FULFIL_PROVISION) and publishes OrderFulfilmentFailed for the admin alert. */
+        @Test
+        void fulfilmentFailed_parks_and_publishes_alert_event() {
+            Order order = Order.place("ord-p", "sub-1", "OTT_NETFLIX_6M", "DIGITAL_SUBSCRIPTION", "px-1", 599, "INR", "PAY_NOW");
+            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
+
+            service.fulfilmentFailed("ord-p", "PROVISIONING_REJECTED: HTTP 422");
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.FULFILMENT_FAILED);
+            assertThat(order.getFailedStep()).isEqualTo("FULFIL_PROVISION");
+            assertThat(publishedEvents().get(0)).isInstanceOf(com.vab.events.order.OrderFulfilmentFailed.class);
+        }
+
+        /** Retry on a parked order re-sends the fulfil command; the order stays parked until the reply lands. */
+        @Test
+        void retry_on_parked_order_sends_redrive_command() {
+            Order order = parked();
+            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
+
+            service.retryFulfilment("ord-p");
+
+            verify(fulfilmentReDrive).reDrive(order);
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.FULFILMENT_FAILED);
+            verifyNoInteractions(publisher);
+        }
+
+        /** Retry on an order that isn't parked is refused (→ 409) and nothing is re-driven. */
+        @Test
+        void retry_on_non_parked_order_is_refused() {
+            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(completed()));
+
+            assertThatThrownBy(() -> service.retryFulfilment("ord-p")).isInstanceOf(IllegalStateException.class);
+            verifyNoInteractions(fulfilmentReDrive);
+        }
+
+        /** Manual override completes a parked order with the out-of-band externalRef and publishes OrderCompleted. */
+        @Test
+        void manual_complete_on_parked_order_completes_with_external_ref() {
+            Order order = parked();
+            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
+
+            service.completeFulfilment("ord-p", "OTT-MANUAL");
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.COMPLETED);
+            assertThat(order.getExternalRef()).isEqualTo("OTT-MANUAL");
+            OrderCompleted event = (OrderCompleted) publishedEvents().get(0);
+            assertThat(event.getExternalRef()).isEqualTo("OTT-MANUAL");
+        }
+
+        /** Manual override on an order that isn't parked is refused (→ 409) and nothing is saved or published. */
+        @Test
+        void manual_complete_on_non_parked_order_is_refused() {
+            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(completed()));
+
+            assertThatThrownBy(() -> service.completeFulfilment("ord-p", "OTT-X")).isInstanceOf(IllegalStateException.class);
+            verify(orderRepo, never()).saveAndFlush(any());
+            verifyNoInteractions(publisher);
+        }
+
+        /** A successful re-drive reply completes the parked order with the OTT ref and validity window. */
+        @Test
+        void redrive_success_reply_completes_parked_order() {
+            Order order = parked();
+            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
+            Instant from = Instant.parse("2026-10-01T00:00:00Z"), until = Instant.parse("2027-04-01T00:00:00Z");
+
+            service.completeFromReDrive("ord-p", "OTT-RD", from, until);
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.COMPLETED);
+            OrderCompleted event = (OrderCompleted) publishedEvents().get(0);
+            assertThat(event.getExternalRef()).isEqualTo("OTT-RD");
+            assertThat(event.getValidUntil()).isEqualTo(until);
+        }
+
+        /** A duplicate success reply for an order already completed is a no-op (idempotent redelivery). */
+        @Test
+        void redrive_success_reply_for_completed_order_is_ignored() {
+            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(completed()));
+
+            service.completeFromReDrive("ord-p", "OTT-RD", Instant.now(), null);
+
+            verify(orderRepo, never()).saveAndFlush(any());
+            verifyNoInteractions(publisher);
+        }
+
+        /** A failed re-drive reply keeps the order parked, records the new reason and re-alerts. */
+        @Test
+        void redrive_failure_reply_re_parks_and_re_alerts() {
+            Order order = parked();
+            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
+
+            service.parkFromReDrive("ord-p", "PROVISIONING_UNAVAILABLE: still down");
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.FULFILMENT_FAILED);
+            assertThat(order.getFailureReason()).isEqualTo("PROVISIONING_UNAVAILABLE: still down");
+            assertThat(publishedEvents().get(0)).isInstanceOf(com.vab.events.order.OrderFulfilmentFailed.class);
+        }
+
+        /** A late failure reply for an order that was meanwhile completed manually must not re-park it. */
+        @Test
+        void redrive_failure_reply_for_completed_order_is_ignored() {
+            Order order = completed();
+            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
+
+            service.parkFromReDrive("ord-p", "late failure");
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.COMPLETED);
             verifyNoInteractions(publisher);
         }
     }

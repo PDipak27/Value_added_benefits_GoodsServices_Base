@@ -733,3 +733,26 @@ FULFILMENT_FAILED  (admin fixes external OTT, then…)
 - **Realm** adds the `vab-admin` role, a `vabadmin` demo user, and (for tokens to carry roles) a realm-role mapper on `vab-ott`; `accessTokenLifespan` is raised for test-token reuse.
 - **E2E migration (defence-in-depth cost):** the black-box suite now calls **through the gateway with bearer tokens**; per-test arbitrary subscribers are preserved by minting tokens whose `subscriberId` claim is the test subject, **creating the Keycloak user on demand via the Admin API**. Admin flows use the seeded `vabadmin`; ops-search (not routed by the gateway) is called directly with the admin token. A dedicated `GatewayAuthE2E` asserts the boundary (401 unauthenticated, public catalog, 403 subscriber-on-admin, admin passes the gate).
 - Other services (inventory / billing / notification / fulfilment / catalog) are **not** routed or secured — internal saga participants, or (catalog) deliberately public.
+
+---
+
+## DD-32 — The order price is verified against catalog at placement, and the check is **fail-closed**  *(supersedes the fail-open catalog verify of Design/09 Q1(b) for price; productType/term now always come from catalog)*
+
+**Problem:** `POST /v1/orders` carried the `amount`/`currency` chosen by the client and nothing checked them: catalog was consulted only for `productType` and `termMonths`, best-effort, and on any failure the client values were kept. A subscriber could buy `OTT_NETFLIX_6M` (599) for 1 INR, or send a zero/negative amount. Separately, the billing demo triggers (authorize decline above 999, capture hard-decline at exactly 777) and the e2e suite *depended* on clients picking arbitrary amounts.
+
+**Options (mismatch):**
+- A) **Reject** a client price that differs from catalog (`409`), so a stale or tampered price is visible to the client.
+- B) **Silently charge** the catalog price, ignoring the client amount.
+
+**Options (catalog unreachable):**
+- C) **Fail-closed** — no verified price, no order (`503`).
+- D) **Fail-open** — keep the client amount while catalog is down (tampering possible during an outage).
+
+**Choice:** **A + C.** The client must send the current catalog `amount` and `currency` (else `409 "Price mismatch … current price is N CUR"`); an offer catalog does not publish (unknown or withdrawn → catalog `404`) is `422`; any other catalog failure is `503`. `productType`, `termMonths` and `priceSnapshotId` are taken from catalog. The controller also rejects malformed bodies with `400` (missing `offerCode`/`currency`, `amount ≤ 0`, `billingMode` not `PAY_NOW`/`BILL_TO_MOBILE`).
+
+**Rationale:** Price integrity outweighs availability for a purchase: an order placed at an unverified price is a revenue leak, while a `503` during a catalog outage is a retryable inconvenience (the idempotency key makes the retry safe; an idempotent replay of an already-placed order is answered before catalog is consulted). Rejecting rather than silently re-pricing (B) keeps the client honest about what the subscriber was shown. Cache fail-open (DD-20) is unaffected — it is about catalog's own reads, which stay available on a Redis outage.
+
+**Consequences:**
+- `CatalogClient.resolveOffer` distinguishes `404` (`null` → `422`) from everything else (`CatalogUnavailableException` → `503`); `OfferDetail` carries `amount`, `currency`, `priceSnapshotId`.
+- **Demo triggers become priced offers** (CatalogSeeder + inventory `V6`): `ACC_DEMO_DECLINE` (1500 → authorize decline; also exceeds the default 1000 BILL_TO_MOBILE limit), `ACC_DEMO_HARDDECLINE` (777 → capture hard-decline), `ACC_DEMO_DELIVERYFAIL` (499, "FAIL" in the code → forward-recovery), plus `ACC_CHARGER_30W` (499) as the PAY_NOW physical happy path. CatalogSeeder now inserts missing seed offers by code (not only into an empty collection), so existing databases receive them.
+- **E2E** prices every order from `GET /v1/offers/{code}` instead of hard-coded amounts. `ITEM_NOT_FOUND` from inventory is no longer reachable through the API (unknown offers stop at `422`); it stays covered by unit tests.

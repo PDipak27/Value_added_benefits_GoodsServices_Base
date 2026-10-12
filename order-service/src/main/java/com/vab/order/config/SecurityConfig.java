@@ -15,6 +15,8 @@ import org.springframework.security.web.SecurityFilterChain;
  * the token.
  *
  * <ul>
+ *   <li>Actuator: health (status only, for probes) and info are public; health details,
+ *       metrics and anything else need {@code vab-admin}.</li>
  *   <li>Back-office actions — order re-drive / manual complete / entitlement revoke,
  *       and the {@code /v1/ops/**} search — require the {@code vab-admin} realm role.</li>
  *   <li>All other {@code /v1/**} endpoints require a valid token; the subscriber-facing
@@ -30,7 +32,9 @@ public class SecurityConfig {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/actuator/**").permitAll()
+                        // Probes + info stay open (k8s); health details, metrics etc. are back-office.
+                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
+                        .requestMatchers("/actuator/**").hasRole("vab-admin")
                         .requestMatchers(HttpMethod.POST,
                                 "/v1/orders/*/retry-fulfilment",
                                 "/v1/orders/*/complete-fulfilment",

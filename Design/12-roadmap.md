@@ -97,12 +97,14 @@ Effort: S ≤ ½ day · M ≈ 1–2 days · L ≈ 3–5 days.
 - [ ] Create the EKS cluster (`JENKINS_ROLE_ARN=<instance_role_arn>`), run `Jenkinsfile.eks` end to end, fix first-run issues. **M**
 - [ ] Revoke the old SonarQube token (it is still in git history). **S**
 
-**Tests**
-- [ ] Order-service ITs: placement through the API with a JWT, and the Mongo projection. **M**
-- [ ] `OrderCommandController` tests with JWT ownership (404) and admin-role cases. **S**
-- [ ] ITs for catalog (Mongo + Redis two-level cache), fulfilment (WireMock OTT + token), ott (audience validation). **L**
-- [ ] api-gateway route × role security tests (WebTestClient + mockJwt). **S**
+**Tests**  - [x]
+- [x] Order-service ITs: placement through the API with a JWT, and the Mongo projection. **M**
+- [x] `OrderCommandController` tests with JWT ownership (404) and admin-role cases. **S**
+- [x] ITs for catalog (Mongo + Redis two-level cache), fulfilment (WireMock OTT + token), ott (audience validation). **L**
+- [x] api-gateway route × role security tests (WebTestClient + mockJwt). **S**
 - [ ] Tag e2e as `smoke`/`full`; build an e2e image that runs as a k8s Job instead of from Jenkins. **M**
+- [x] Security fixes + tests: gateway actuator lockdown (no route-admin endpoint), server-side price verification (DD-32), order-service actuator details admin-only. **S**
+- [x] Re-drive/revoke unit tests, inventory no-oversell IT, shared-events wire-contract tests, shared-observability tests, BILL_TO_MOBILE + forward-recovery e2e. **M**
 
 **Observability on Kubernetes**
 - [ ] `micrometer-registry-prometheus` + saga/order business metrics. **M**

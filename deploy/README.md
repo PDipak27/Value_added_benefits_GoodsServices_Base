@@ -209,6 +209,13 @@ curl -s -X POST http://localhost:8081/v1/orders -H "Content-Type: application/js
 > `POOL_EXHAUSTED` → order `FAILED`. Compensating an in-flight order returns its key
 > to the FREE pool, so a subsequent order can succeed again.
 
+> **Prices are verified.** order-service checks `amount`/`currency` against the catalog
+> offer: a different price → `409`, an unknown or withdrawn offer → `422`, catalog
+> unreachable → `503` (fail-closed). Send the catalog price (`GET /v1/offers/{code}`).
+> The billing/fulfilment demo triggers are therefore dedicated offers *priced* at the
+> trigger values: `ACC_DEMO_DECLINE` (1500), `ACC_DEMO_HARDDECLINE` (777) and
+> `ACC_DEMO_DELIVERYFAIL` (499, "FAIL" in the code).
+
 ### Compensation path (billing decline)
 
 For `PAY_NOW`, billing declines any `amount > 999`. The authorize step runs *after*
@@ -218,8 +225,8 @@ reservation) and terminal failure:
 ```bash
 curl -s -X POST http://localhost:8081/v1/orders \
   -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
-  -d '{"subscriberId":"sub_test_002","offerCode":"OTT_NETFLIX_6M","productType":"DIGITAL_SUBSCRIPTION",
-       "priceSnapshotId":"ps_test_001","amount":1500,"currency":"INR",
+  -d '{"subscriberId":"sub_test_002","offerCode":"ACC_DEMO_DECLINE","productType":"PHYSICAL_GOOD",
+       "priceSnapshotId":"ps_2026_10_demodecline","amount":1500,"currency":"INR",
        "billingMode":"PAY_NOW"}'
 
 # billing log → "Billing DECLINED ... exceeds limit 999"
@@ -242,8 +249,8 @@ commit*: billing replies `withFailure`, the holds roll back LIFO, and the order 
 ```bash
 curl -s -X POST http://localhost:8081/v1/orders \
   -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
-  -d '{"subscriberId":"sub_test_003","offerCode":"SW_ANTIVIRUS_1Y","productType":"SOFTWARE_LICENSE",
-       "priceSnapshotId":"ps_test_001","amount":777,"currency":"INR",
+  -d '{"subscriberId":"sub_test_003","offerCode":"ACC_DEMO_HARDDECLINE","productType":"PHYSICAL_GOOD",
+       "priceSnapshotId":"ps_2026_10_demoharddecline","amount":777,"currency":"INR",
        "billingMode":"PAY_NOW"}'
 
 # billing log → "Billing CAPTURE DECLINED ... amount=777"
@@ -261,13 +268,13 @@ Past the pivot the saga is **forward-only**. A non-transient delivery failure (r
 closed, damaged good) replies `OrderFulfilmentFailed` as a **success-outcome** — the
 saga does *not* roll back; it sets `forwardRecover` and moves forward:
 refund (PAY_NOW) / reverseLedger (BTM) → release inventory → terminal
-`CANCELLED_REFUNDED`. Demo trigger: an **offer code containing `FAIL`**:
+`CANCELLED_REFUNDED`. Demo trigger: an **offer code containing `FAIL`** (seeded: `ACC_DEMO_DELIVERYFAIL`):
 
 ```bash
 curl -s -X POST http://localhost:8081/v1/orders \
   -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
-  -d '{"subscriberId":"sub_test_003","offerCode":"OFF-FAIL","productType":"PHYSICAL_GOOD",
-       "priceSnapshotId":"ps_test_001","amount":499,"currency":"INR",
+  -d '{"subscriberId":"sub_test_003","offerCode":"ACC_DEMO_DELIVERYFAIL","productType":"PHYSICAL_GOOD",
+       "priceSnapshotId":"ps_2026_10_demodeliveryfail","amount":499,"currency":"INR",
        "billingMode":"PAY_NOW"}'
 
 # fulfilment log → "Fulfil FAILED (DELIVERY_FAILED demo trigger)"

@@ -76,7 +76,10 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,gateway
+        # NOT `gateway`: its actuator endpoint can create/delete routes and refresh them
+        # (POST /actuator/gateway/routes/{id}) — route injection at the edge. Inspect routes
+        # from the config instead. Everything but health/info is also gated in SecurityConfig.
+        include: health,info
 
 logging:
   level:

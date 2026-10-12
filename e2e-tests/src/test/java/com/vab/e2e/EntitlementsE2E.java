@@ -24,7 +24,7 @@ class EntitlementsE2E extends E2EBase {
     @Test
     void completed_digital_appears_in_my_benefits_with_validity_and_blocks_repurchase() {
         String sub = "sub-ent-" + UUID.randomUUID();
-        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
         // My Benefits — entitlement projection lags the order, so poll until it shows.
@@ -58,7 +58,7 @@ class EntitlementsE2E extends E2EBase {
     @Test
     void admin_revoke_removes_the_benefit_from_my_benefits() {
         String sub = "sub-rev-" + UUID.randomUUID();
-        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
         await().atMost(SETTLE).pollInterval(Duration.ofSeconds(3)).pollDelay(Duration.ZERO)

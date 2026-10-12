@@ -80,4 +80,41 @@ class OrderTest {
         assertThat(o.getCancelledAt()).isNotNull();
         assertThat(o.getFailureReason()).isEqualTo("FULFIL_FAILED: DELIVERY_FAILED");
     }
+
+    /** DD-27 park: FULFILMENT_FAILED is non-terminal, records FULFIL_PROVISION + reason and stamps the attempt time. */
+    @Test
+    void fulfilmentFailed_parks_non_terminal_with_attempt_stamp() {
+        Order o = placed();
+        o.fulfilmentFailed("PROVISIONING_UNAVAILABLE: HTTP 503");
+        assertThat(o.getStatus()).isEqualTo(OrderStatus.FULFILMENT_FAILED);
+        assertThat(o.getFailedStep()).isEqualTo("FULFIL_PROVISION");
+        assertThat(o.getFailureReason()).isEqualTo("PROVISIONING_UNAVAILABLE: HTTP 503");
+        assertThat(o.getLastAttemptAt()).isNotNull();
+    }
+
+    /** A parked order can still complete (re-drive / manual override), carrying the OTT ref and validity window. */
+    @Test
+    void parked_order_completes_with_external_ref_and_validity() {
+        Order o = placed();
+        o.fulfilmentFailed("PROVISIONING_UNAVAILABLE");
+        Instant from = Instant.parse("2026-10-01T00:00:00Z"), until = Instant.parse("2027-04-01T00:00:00Z");
+        o.complete(Instant.now(), null, null, "OTT-RD", from, until);
+        assertThat(o.getStatus()).isEqualTo(OrderStatus.COMPLETED);
+        assertThat(o.getExternalRef()).isEqualTo("OTT-RD");
+        assertThat(o.getValidFrom()).isEqualTo(from);
+        assertThat(o.getValidUntil()).isEqualTo(until);
+    }
+
+    /** Entitlement revoke keeps the order COMPLETED and is idempotent: the first revoke time is kept. */
+    @Test
+    void revokeEntitlement_is_idempotent_and_keeps_order_completed() {
+        Order o = placed();
+        o.complete(Instant.now(), null, null, "OTT-1");
+        Instant first = Instant.parse("2026-10-01T00:00:00Z");
+        o.revokeEntitlement(first);
+        o.revokeEntitlement(Instant.parse("2026-10-02T00:00:00Z"));
+        assertThat(o.getStatus()).isEqualTo(OrderStatus.COMPLETED);
+        assertThat(o.isEntitlementRevoked()).isTrue();
+        assertThat(o.getEntitlementRevokedAt()).isEqualTo(first);
+    }
 }

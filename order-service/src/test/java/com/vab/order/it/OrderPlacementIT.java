@@ -32,8 +32,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Order placement through the real API + security chain into real Postgres/Mongo (§A-3, DD-14/15):
- * one transaction writes the order row, the OrderPlaced outbox row, the saga instance + its first
- * command, and the idempotency key; GET then reads it back (read-your-writes fallback before projection).
+ * the price is verified against catalog (409 / 422 / 503), then one transaction writes the order row,
+ * the OrderPlaced outbox row, the saga instance + its first command, and the idempotency key; GET then reads it back (read-your-writes fallback before projection).
  *
  * <p>Each test uses a fresh subscriber id, so Postgres rows from other tests (or reused containers)
  * never interfere; the Mongo read models are wiped per test.
@@ -54,15 +54,20 @@ class OrderPlacementIT extends AbstractOrderIntegrationTest {
         subscriber = "sub-it-" + UUID.randomUUID().toString().substring(0, 8);
         views.deleteAll();
         entitlements.deleteAll();
-        when(catalogClient.resolveOffer(OFFER)).thenReturn(new CatalogClient.OfferDetail("DIGITAL_SUBSCRIPTION", 6));
+        when(catalogClient.resolveOffer(OFFER)).thenReturn(
+                new CatalogClient.OfferDetail("DIGITAL_SUBSCRIPTION", 6, 599L, "INR", "ps_2026_05_netflix6m"));
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
 
     private ResultActions place(String sub, String idempotencyKey, String clientProductType) throws Exception {
+        return place(sub, idempotencyKey, clientProductType, 599);
+    }
+
+    private ResultActions place(String sub, String idempotencyKey, String clientProductType, long amount) throws Exception {
         String body = """
                 {"offerCode":"%s","productType":"%s","priceSnapshotId":"ps_2026_05_netflix6m",
-                 "amount":599,"currency":"INR","billingMode":"PAY_NOW"}""".formatted(OFFER, clientProductType);
+                 "amount":%d,"currency":"INR","billingMode":"PAY_NOW"}""".formatted(OFFER, clientProductType, amount);
         return mvc.perform(post("/v1/orders")
                 .with(jwt().jwt(j -> j.claim("subscriberId", sub)))
                 .header("Idempotency-Key", idempotencyKey)
@@ -185,7 +190,7 @@ class OrderPlacementIT extends AbstractOrderIntegrationTest {
         assertThat(count("SELECT count(*) FROM orders.orders WHERE subscriber_id = ?", subscriber)).isZero();
     }
 
-    // ── catalog verification (DD-20) ────────────────────────────────────────
+    // ── catalog verification (price fail-closed) ────────────────────────────────────────
 
     /** Catalog is authoritative: a mismatching client productType is replaced by catalog's, in the row and in OrderPlaced. */
     @Test
@@ -198,16 +203,44 @@ class OrderPlacementIT extends AbstractOrderIntegrationTest {
         assertThat((String) orderPlacedOutboxRows(orderId).get(0).get("payload")).contains("DIGITAL_SUBSCRIPTION");
     }
 
-    /** Fail-open: with catalog unreachable the order is still placed, keeping the client productType and no term. */
+    /** Price tampering: an amount below the catalog price is rejected with 409 and nothing is written (no row, no outbox event). */
     @Test
-    void catalog_down_places_order_with_client_values() throws Exception {
+    void tampered_price_is_rejected_409_and_nothing_written() throws Exception {
+        place(subscriber, UUID.randomUUID().toString(), "DIGITAL_SUBSCRIPTION", 1).andExpect(status().isConflict());
+
+        assertThat(count("SELECT count(*) FROM orders.orders WHERE subscriber_id = ?", subscriber)).isZero();
+        assertThat(count("SELECT count(*) FROM eventuate.message WHERE payload LIKE ?", "%" + subscriber + "%")).isZero();
+    }
+
+    /** An offer catalog doesn't publish (unknown or withdrawn) is rejected with 422 at placement. */
+    @Test
+    void unknown_offer_is_rejected_422() throws Exception {
         when(catalogClient.resolveOffer(OFFER)).thenReturn(null);
 
+        place(subscriber, UUID.randomUUID().toString(), "DIGITAL_SUBSCRIPTION").andExpect(status().isUnprocessableEntity());
+
+        assertThat(count("SELECT count(*) FROM orders.orders WHERE subscriber_id = ?", subscriber)).isZero();
+    }
+
+    /** Fail-closed: with catalog unreachable the price can't be verified, so placement is 503 and nothing is written. */
+    @Test
+    void catalog_down_rejects_with_503() throws Exception {
+        when(catalogClient.resolveOffer(OFFER))
+                .thenThrow(new CatalogClient.CatalogUnavailableException(OFFER, new RuntimeException("connect timed out")));
+
+        place(subscriber, UUID.randomUUID().toString(), "DIGITAL_SUBSCRIPTION").andExpect(status().isServiceUnavailable());
+
+        assertThat(count("SELECT count(*) FROM orders.orders WHERE subscriber_id = ?", subscriber)).isZero();
+        assertThat(count("SELECT count(*) FROM orders.idempotency_keys WHERE subscriber_id = ?", subscriber)).isZero();
+    }
+
+    /** The order records catalog's priceSnapshotId (the price actually verified), whatever the client sent. */
+    @Test
+    void order_records_catalog_price_snapshot() throws Exception {
         String orderId = placeOk(subscriber, UUID.randomUUID().toString());
 
-        Map<String, Object> row = orderRow(orderId);
-        assertThat(row.get("product_type")).isEqualTo("DIGITAL_SUBSCRIPTION");
-        assertThat(row.get("term_months")).isNull();
+        assertThat(orderRow(orderId).get("price_snapshot_id")).isEqualTo("ps_2026_05_netflix6m");
+        assertThat(((Number) orderRow(orderId).get("amount")).longValue()).isEqualTo(599);
     }
 
     // ── read side right after the write (DD-15) ─────────────────────────────

@@ -31,6 +31,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -115,22 +116,38 @@ public class OrderCommandService {
         log.info("Placing order: subscriberId={}, offerCode={}, amount={} {}",
                 cmd.getSubscriberId(), cmd.getOfferCode(), cmd.getAmount(), cmd.getCurrency());
 
-        // ── Resolve productType + benefit term (catalog-verified, fail-open) ──
-        // The mobile app builds the order from an offer, so it sends a productType.
-        // We verify it against catalog when reachable and snapshot the offer's
-        // termMonths (drives the entitlement's validUntil); on any failure we keep
-        // the client-sent productType with a null term (DD-20 fail-open).
-        String  productType = cmd.getProductType();
-        Integer termMonths  = null;
-        CatalogClient.OfferDetail offer = catalogClient.resolveOffer(cmd.getOfferCode());
-        if (offer != null) {
-            if (offer.productType() != null && !offer.productType().equals(productType)) {
-                log.warn("ProductType mismatch for offerCode={}: client={}, catalog={} — using catalog",
-                        cmd.getOfferCode(), productType, offer.productType());
-            }
-            if (offer.productType() != null) productType = offer.productType();
-            termMonths = offer.termMonths();
+        // ── Verify against catalog: price (fail-closed), productType, term ──
+        // The mobile app builds the order from an offer and sends its price; catalog is
+        // authoritative. The amount/currency must match the current catalog price (a
+        // stale or tampered price is a 409), an unknown/withdrawn offer is a 422, and an
+        // unreachable catalog is a 503 — price integrity is fail-closed (DD-32).
+        // productType and termMonths (drive the entitlement's validUntil) come from catalog.
+        CatalogClient.OfferDetail offer;
+        try {
+            offer = catalogClient.resolveOffer(cmd.getOfferCode());
+        } catch (CatalogClient.CatalogUnavailableException e) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "Catalog unavailable: the price of " + cmd.getOfferCode() + " cannot be verified, retry later");
         }
+        if (offer == null) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "Unknown or withdrawn offer " + cmd.getOfferCode());
+        }
+        if (offer.amount() == null || offer.amount() != cmd.getAmount()
+                || !Objects.equals(offer.currency(), cmd.getCurrency())) {
+            log.warn("Price mismatch for offerCode={}: client={} {}, catalog={} {}", cmd.getOfferCode(),
+                    cmd.getAmount(), cmd.getCurrency(), offer.amount(), offer.currency());
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Price mismatch for offer " + cmd.getOfferCode()
+                    + ": current price is " + offer.amount() + " " + offer.currency());
+        }
+        String productType = cmd.getProductType();
+        if (offer.productType() != null && !offer.productType().equals(productType)) {
+            log.warn("ProductType mismatch for offerCode={}: client={}, catalog={} — using catalog",
+                    cmd.getOfferCode(), productType, offer.productType());
+            productType = offer.productType();
+        }
+        Integer termMonths      = offer.termMonths();
+        String  priceSnapshotId = offer.priceSnapshotId() != null ? offer.priceSnapshotId() : cmd.getPriceSnapshotId();
 
         // ── Insert state-stored aggregate ──────────────────────────────
         String orderId = "ord_" + UUID.randomUUID().toString().replace("-", "");
@@ -139,7 +156,7 @@ public class OrderCommandService {
                 cmd.getSubscriberId(),
                 cmd.getOfferCode(),
                 productType,
-                cmd.getPriceSnapshotId(),
+                priceSnapshotId,
                 cmd.getAmount(),
                 cmd.getCurrency(),
                 cmd.getBillingMode());
@@ -154,7 +171,7 @@ public class OrderCommandService {
                         cmd.getSubscriberId(),
                         cmd.getOfferCode(),
                         productType,
-                        cmd.getPriceSnapshotId(),
+                        priceSnapshotId,
                         cmd.getAmount(),
                         cmd.getCurrency(),
                         cmd.getBillingMode(),

@@ -21,7 +21,7 @@ class OrderQueryE2E extends E2EBase {
     @Test
     void get_by_id_is_readable_immediately_after_place() {
         String sub = sub();
-        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", "PAY_NOW");
         authed().get("/v1/orders/{id}", orderId)
                 .then().statusCode(200)
                 .body("orderId", equalTo(orderId))
@@ -39,7 +39,7 @@ class OrderQueryE2E extends E2EBase {
     @Test
     void list_by_subscriber_contains_placed_order() {
         String sub = "sub-e2e-" + UUID.randomUUID();
-        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", "PAY_NOW");
 
         // "My orders" — scoped to the token's subscriberId; read model only, so poll.
         await().atMost(SETTLE).pollInterval(Duration.ofSeconds(1)).pollDelay(Duration.ZERO)
@@ -52,7 +52,7 @@ class OrderQueryE2E extends E2EBase {
     @Test
     void timeline_endpoint_returns_the_audit_entries() {  // §B2
         String sub = "sub-tl-" + UUID.randomUUID();
-        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", "PAY_NOW");
 
         // Timeline is read-model-only — poll until it projects, then assert PLACED is present.
         await().atMost(SETTLE).pollInterval(Duration.ofSeconds(1)).pollDelay(Duration.ZERO)
@@ -64,7 +64,7 @@ class OrderQueryE2E extends E2EBase {
     @Test
     void ops_search_finds_a_completed_order_by_status_and_offer() {  // §B3
         String sub = "sub-ops-" + UUID.randomUUID();
-        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", 499, "PAY_NOW");
+        String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
 
         // /v1/ops/orders is admin-only and not routed by the gateway — call order-service

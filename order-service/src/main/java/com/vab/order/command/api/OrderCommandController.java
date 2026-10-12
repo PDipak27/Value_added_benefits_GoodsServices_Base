@@ -20,6 +20,8 @@ import java.util.UUID;
 @RequestMapping("/v1/orders")
 public class OrderCommandController {
 
+    private static final List<String> BILLING_MODES = List.of("PAY_NOW", "BILL_TO_MOBILE");
+
     private final OrderCommandService commandService;
     private final OrderRepository     orderRepo;
 
@@ -42,6 +44,7 @@ public class OrderCommandController {
             UriComponentsBuilder ucb) {
 
         validateIdempotencyKey(idempotencyKey);
+        validatePlaceOrder(request);
 
         // §A-3/A5: the subject is the authenticated subscriber (JWT claim), never client input.
         String subscriberId = subscriberId(jwt);
@@ -187,6 +190,23 @@ public class OrderCommandController {
         Order order = orderRepo.findById(orderId).orElse(null);
         if (order == null || !caller.equals(order.getSubscriberId())) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found");
+        }
+    }
+
+    /**
+     * Shape checks before any lookup: offer and currency present, a positive amount, and a
+     * known billing mode (an unknown mode would match neither saga branch). Whether the
+     * amount is the right price is decided against catalog in the service (409 if not).
+     */
+    private void validatePlaceOrder(PlaceOrderRequest request) {
+        String problem = null;
+        if (request.offerCode() == null || request.offerCode().isBlank())      problem = "offerCode is required";
+        else if (request.amount() <= 0)                                         problem = "amount must be positive";
+        else if (request.currency() == null || request.currency().isBlank())   problem = "currency is required";
+        else if (request.billingMode() == null
+                || !BILLING_MODES.contains(request.billingMode()))              problem = "billingMode must be one of " + BILLING_MODES;
+        if (problem != null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, problem);
         }
     }
 
