@@ -82,13 +82,13 @@ Each service is an independent Spring Boot app. In separate terminals:
 | 4 | `cd fulfilment-service && mvn spring-boot:run` | 8086 | fulfil (per product type) |
 | 5 | `cd notification-service && mvn spring-boot:run` | 8084 | reacts to `OrderConfirmed` / `OrderCompleted` / `OrderFailed` |
 | 6 | `cd catalog-service && mvn spring-boot:run` | 8085 | offer browse + eligibility; order-service verifies `productType` against it |
-| 7 | `cd api-gateway && mvn spring-boot:run` | 8080 | single front door that routes to the above |
+| 7 | `cd api-gateway && mvn spring-boot:run` | 8089 | single front door that routes to the above |
 
 **Minimal happy-path saga:** terminals 1–4 (order → inventory → billing → fulfilment).
 Add 5 to see notifications fire; 6 to browse the catalog (and for `productType`
 verification — order-service is fail-open if it's down); 7 to exercise routing.
 
-> The gateway (8080) routes `/v1/offers/**` → catalog (8085) and
+> The gateway (8089) routes `/v1/offers/**` → catalog (8085) and
 > `/v1/orders/**`, `/v1/entitlements/**` → order-service (8081). Inventory,
 > billing and notification are internal (saga participants / event consumers)
 > and are intentionally not routed.

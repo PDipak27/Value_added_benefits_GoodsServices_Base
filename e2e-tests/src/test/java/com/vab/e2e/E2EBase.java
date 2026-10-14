@@ -43,7 +43,7 @@ abstract class E2EBase {
     System.out.println("keyCloak uRL:"+	System.getProperty("vab.keycloak.url") );
     }
     /** Generous: the async path is POST → Kafka command/reply → CDC relay → projection. */
-    protected static final Duration SETTLE = Duration.ofSeconds(45);
+    protected static final Duration SETTLE = Duration.ofSeconds(60);
 
     private static final String E2E_PASSWORD = "e2e-pass";
     private static final Map<String, String> TOKENS = new ConcurrentHashMap<>();
@@ -82,17 +82,20 @@ abstract class E2EBase {
 
     /** The seeded back-office admin token (carries the {@code vab-admin} realm role). */
     protected static String adminToken() {
-        return TOKENS.computeIfAbsent("admin", k -> passwordToken("vabadmin", "vabadmin"));
+        String res = TOKENS.computeIfAbsent("admin", k -> passwordToken("vabadmin", "vabadmin"));
+        return res;
     }
 
     /** Request through the gateway as a specific subscriber (place / my-orders / my-benefits). */
     protected RequestSpecification asSubscriber(String subscriberId) {
-        return given().baseUri(GATEWAY).header("Authorization", "Bearer " + tokenForSubscriber(subscriberId));
+    		RequestSpecification res = given().baseUri(GATEWAY).header("Authorization", "Bearer " + tokenForSubscriber(subscriberId));
+    		return res;
     }
 
     /** Request through the gateway as the back-office admin (retry / complete / revoke / ops). */
     protected RequestSpecification asAdmin() {
-        return given().baseUri(GATEWAY).header("Authorization", "Bearer " + adminToken());
+    		RequestSpecification res = given().baseUri(GATEWAY).header("Authorization", "Bearer " + adminToken());
+    		return res;
     }
 
     /**
@@ -106,12 +109,13 @@ abstract class E2EBase {
     }
 
     private static String kcAdminToken() {
-        return given().baseUri(KEYCLOAK)
+    	String kcAdminToken = given().baseUri(KEYCLOAK)
                 .contentType("application/x-www-form-urlencoded")
                 .formParam("grant_type", "password").formParam("client_id", "admin-cli")
                 .formParam("username", KC_ADMIN_USER).formParam("password", KC_ADMIN_PASSWORD)
                 .when().post("/realms/master/protocol/openid-connect/token")
                 .then().statusCode(200).extract().path("access_token");
+    		return kcAdminToken;
     }
 
     private static volatile boolean userProfileReady = false;
@@ -142,7 +146,11 @@ abstract class E2EBase {
 
     /** Create a Keycloak user (username == subscriberId) carrying the subscriberId attribute; 409 if it exists. */
     private static void ensureUser(String subscriberId, String username) {
-        ensureUserProfileAllowsSubscriberId();
+    		//instead of programmatically enabling it, use use vab-realm.json and import it.
+    		//for unmanagedAttributePolicy:ENABLED, 
+    		//this is needed only once when keycloak's db is newly created.
+    		//ensureUserProfileAllowsSubscriberId();
+    	
         Map<String, Object> user = new LinkedHashMap<>();
         user.put("username", username);
         user.put("enabled", true);
@@ -159,13 +167,14 @@ abstract class E2EBase {
     }
 
     private static String passwordToken(String username, String password) {
-        return given().baseUri(KEYCLOAK)
+        String res =  given().baseUri(KEYCLOAK)
                 .contentType("application/x-www-form-urlencoded")
                 .formParam("grant_type", "password").formParam("client_id", "vab-ott")
                 .formParam("username", username).formParam("password", password)
                 .formParam("scope", "openid")
                 .when().post("/realms/vab/protocol/openid-connect/token")
                 .then().statusCode(200).extract().path("access_token");
+        return res;
     }
 
     @BeforeAll
