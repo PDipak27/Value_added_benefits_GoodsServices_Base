@@ -42,5 +42,11 @@
             <artifactId>eventuate-tram-messaging</artifactId>
             <optional>true</optional>
         </dependency>
+        <!-- Eventuate outbox id generator: optional — OutboxIdNodeReporter wires only where it is present. -->
+        <dependency>
+            <groupId>io.eventuate.common</groupId>
+            <artifactId>eventuate-common-id</artifactId>
+            <optional>true</optional>
+        </dependency>
     </dependencies>
 </project>

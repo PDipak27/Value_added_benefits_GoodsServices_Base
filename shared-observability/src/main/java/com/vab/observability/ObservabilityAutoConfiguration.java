@@ -34,4 +34,15 @@ public class ObservabilityAutoConfiguration {
             return new CorrelationMessageInterceptor();
         }
     }
+
+    /** Startup log of this JVM's Eventuate outbox-id node, to spot id collisions between co-located services. */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "io.eventuate.common.id.IdGenerator")
+    static class OutboxIdReportConfiguration {
+        @Bean
+        public OutboxIdNodeReporter outboxIdNodeReporter(
+                org.springframework.beans.factory.ObjectProvider<io.eventuate.common.id.IdGenerator> idGenerator) {
+            return new OutboxIdNodeReporter(idGenerator);
+        }
+    }
 }

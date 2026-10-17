@@ -59,7 +59,7 @@ spring:
 
       httpclient:
         connect-timeout: 2000
-        response-timeout: 10s
+        response-timeout: 45s
 
 management:
   # §perf: default OFF (0.0) at the edge — traceId is still generated & rides traceparent downstream

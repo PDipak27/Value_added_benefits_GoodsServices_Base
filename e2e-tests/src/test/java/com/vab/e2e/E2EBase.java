@@ -5,6 +5,7 @@ import static io.restassured.http.ContentType.JSON;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+import java.lang.StackWalker.StackFrame;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -200,7 +201,17 @@ abstract class E2EBase {
      * catalog, so tests no longer pick amounts — billing demo triggers are priced offers.)
      */
     protected String placeOrder(String subscriberId, String offerCode, String productType, String billingMode) {
-        return placeOrder(subscriberId, offerCode, productType, billingMode, UUID.randomUUID().toString());
+        String orderID = placeOrder(subscriberId, offerCode, productType, billingMode, UUID.randomUUID().toString());
+        //System.out.println("E2EBase: placed "+orderID);
+        String callerMethodName = StackWalker.getInstance()
+                .walk(stream -> stream
+                    .skip(1) // Skip 'calledMethod' itself
+                    .findFirst()
+                    .map(StackFrame::getMethodName)
+                    .orElse("Unknown"));
+
+            System.out.println("Test: " + callerMethodName + " orderID: "+orderID); 
+        return  orderID;
     }
 
     protected String placeOrder(String subscriberId, String offerCode, String productType,

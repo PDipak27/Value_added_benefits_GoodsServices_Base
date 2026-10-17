@@ -53,7 +53,7 @@ class OrderHappyPathE2E extends E2EBase {
     }
 
     @Test
-    @Disabled
+//    @Disabled
     void digital_subscription_bill_to_mobile_completes() {
         String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", "BILL_TO_MOBILE");
         awaitStatus(orderId, "COMPLETED");
