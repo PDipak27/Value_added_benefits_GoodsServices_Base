@@ -91,13 +91,13 @@ class GatewayAuthE2E extends E2EBase {
 
     @Test
     void admin_token_passes_the_role_gate() {
-        // Admin clears the gate → reaches order-service, which returns 409 (not parked),
-        // NOT 401/403 — proving the vab-admin role was accepted and the token relayed.
+        // Admin clears the gate and reaches order-service (202, not 401/403): the vab-admin role
+        // was accepted and the token relayed.
         String sub = sub();
         String orderId = placeOrder(sub, "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", "PAY_NOW");
         awaitStatus(orderId, "COMPLETED");
         asAdmin()
-                .when().post("/v1/orders/{id}/retry-fulfilment", orderId)
-                .then().statusCode(409);
+                .when().post("/v1/orders/{id}/revoke-entitlement", orderId)
+                .then().statusCode(202);
     }
 }

@@ -5,6 +5,11 @@ server:
 spring:
   application:
     name: order-service
+  # Design/13 §8.1: every outbound HTTP call is bounded (applies to the auto-configured RestClient.Builder).
+  http:
+    client:
+      connect-timeout: 2s
+      read-timeout: 5s
 
   # ── §A-3/A5: validate the gateway-relayed Keycloak JWT (JWKS via issuer-uri).
   #    Keycloak must be up before order-service starts (discovery is eager). ──
@@ -20,6 +25,12 @@ spring:
     username: eventuate
     password: eventuate
     driver-class-name: org.postgresql.Driver
+    # Design/13 §8.1: bounded waits. A blocked pool fails in 3 s; a statement or lock wait can't hang a
+    # consumer forever (55P03 / 57014 are retried by shared-messaging's decorator).
+    hikari:
+      connection-timeout: 3000
+      data-source-properties:
+        options: "-c statement_timeout=10000 -c lock_timeout=3000"
 
   jpa:
     hibernate:
@@ -48,6 +59,13 @@ catalog:
 eventuate:
   database:
     schema: eventuate
+  # Design/13 §8.3: pause a partition instead of buffering an unbounded backlog while a handler waits.
+  local:
+    kafka:
+      consumer:
+        back-pressure:
+          low: 100
+          high: 500
 
 # ── Eventuate Tram / Kafka ─────────────────────────────────────────────────
 eventuatelocal:
@@ -78,6 +96,12 @@ management:
       # Status is public (probes); component details (DB/Mongo/Kafka) only for vab-admin.
       show-details: when-authorized
       roles: vab-admin
+      # Design/13 §9: a dead Eventuate subscription fails liveness (k8s restarts the pod).
+      probes:
+        enabled: true          # livenessState / readinessState exist outside k8s too
+      group:
+        liveness:
+          include: livenessState,eventuateSubscriptions
 
 logging:
   level:

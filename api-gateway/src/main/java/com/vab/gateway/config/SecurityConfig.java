@@ -20,6 +20,7 @@ import org.springframework.security.web.server.SecurityWebFilterChain;
  *       update, withdraw) require the {@code vab-admin} realm role.</li>
  *   <li>Back-office order actions (retry / complete / revoke) require the
  *       {@code vab-admin} realm role.</li>
+ *   <li>The test UI ({@code GET /ui/**}: static files + its Keycloak config) is public; the calls it makes carry a token.</li>
  *   <li>Everything else routed here (orders, entitlements) requires a valid token.</li>
  * </ul>
  */
@@ -36,14 +37,14 @@ public class SecurityConfig {
                         // gateway route-admin endpoint is not exposed at all — see application.yml.)
                         .pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                         .pathMatchers("/actuator/**").hasRole("vab-admin")
+                        // Test UI: static files + its Keycloak config; the API calls it makes carry a token.
+                        .pathMatchers(HttpMethod.GET, "/ui", "/ui/**").permitAll()
                         // Catalog: browse + eligibility evaluate are public; every other write
                         // (create / update / :withdraw) is back-office and needs vab-admin.
                         .pathMatchers(HttpMethod.GET, "/v1/offers/**").permitAll()
                         .pathMatchers(HttpMethod.POST, "/v1/offers/*:evaluate").permitAll()
                         .pathMatchers("/v1/offers/**").hasRole("vab-admin")
                         .pathMatchers(HttpMethod.POST,
-                                "/v1/orders/*/retry-fulfilment",
-                                "/v1/orders/*/complete-fulfilment",
                                 "/v1/orders/*/revoke-entitlement").hasRole("vab-admin")
                         .anyExchange().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt ->

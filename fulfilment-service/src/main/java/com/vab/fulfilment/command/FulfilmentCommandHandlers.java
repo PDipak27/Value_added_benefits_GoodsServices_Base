@@ -2,16 +2,22 @@ package com.vab.fulfilment.command;
 
 import com.vab.events.common.ProductType;
 import com.vab.events.fulfilment.*;
+import com.vab.fulfilment.command.OttProvisioningService.Attempt;
 import com.vab.fulfilment.domain.FulfilmentRecord;
 import com.vab.fulfilment.domain.FulfilmentRecordRepository;
+import com.vab.fulfilment.provisioning.ProvisioningMetrics;
+import com.vab.fulfilment.provisioning.ProvisioningProperties;
+import com.vab.fulfilment.provisioning.ProvisioningTaskService;
+import com.vab.fulfilment.provisioning.ProvisioningTaskStore;
 import io.eventuate.tram.commands.consumer.CommandHandlers;
 import io.eventuate.tram.commands.consumer.CommandMessage;
+import io.eventuate.tram.commands.consumer.CommandReplyProducer;
+import io.eventuate.tram.commands.consumer.CommandReplyToken;
 import io.eventuate.tram.messaging.common.Message;
 import io.eventuate.tram.sagas.participant.SagaCommandHandlersBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -24,11 +30,18 @@ import static io.eventuate.tram.commands.consumer.CommandHandlerReplyBuilder.wit
  * channel. A single {@link FulfilOrderCommand} is dispatched internally by
  * {@code productType}, so the orchestrator never grows a step per type.
  *
- * <p>Each path is a stub that synthesises a delivery artifact and records a
- * {@link FulfilmentRecord} (the audit row). Fulfil is post-pivot and forward-only
- * (DD-26): a non-transient failure is a success-outcome {@link OrderFulfilmentFailed}
- * reply that drives the saga's forward-recovery, never a rollback. Idempotency comes
- * from the Eventuate Tram {@code received_messages} table.
+ * <p>Fulfil is post-pivot and forward-only (DD-26): every reply is success-outcome, and
+ * a failure reply ({@link OrderFulfilmentFailed}, {@link OrderProvisioningCancelled})
+ * drives the saga's forward-recovery (refund), never a rollback.
+ *
+ * <p><b>DIGITAL_SUBSCRIPTION (Design/13 §6).</b> One OTT attempt inline. If OTT is
+ * unavailable, the reply is <em>deferred</em>: the saga's reply token goes into a
+ * provisioning task, and the {@code ProvisioningPoller} answers later (provisioned,
+ * rejected, deadline passed, or cancelled by the user).
+ *
+ * <p>Each handler runs inside Eventuate Tram's message transaction (dedupe + handler +
+ * outbox), so task rows, records and replies commit together. Idempotency comes from the
+ * Tram {@code received_messages} table.
  */
 @Component
 public class FulfilmentCommandHandlers {
@@ -37,19 +50,40 @@ public class FulfilmentCommandHandlers {
 
     private final FulfilmentRecordRepository records;
     private final OttProvisioningService     ottProvisioning;
+    private final ProvisioningTaskStore      tasks;
+    private final ProvisioningTaskService    taskService;
+    private final ProvisioningProperties     provisioningProps;
+    private final ProvisioningMetrics        metrics;
+    private final CommandReplyProducer       replies;
 
     public FulfilmentCommandHandlers(FulfilmentRecordRepository records,
-                                     OttProvisioningService ottProvisioning) {
-        this.records         = records;
-        this.ottProvisioning = ottProvisioning;
+                                     OttProvisioningService ottProvisioning,
+                                     ProvisioningTaskStore tasks,
+                                     ProvisioningTaskService taskService,
+                                     ProvisioningProperties provisioningProps,
+                                     ProvisioningMetrics metrics,
+                                     CommandReplyProducer replies) {
+        this.records           = records;
+        this.ottProvisioning   = ottProvisioning;
+        this.tasks             = tasks;
+        this.taskService       = taskService;
+        this.provisioningProps = provisioningProps;
+        this.metrics           = metrics;
+        this.replies           = replies;
     }
 
     public CommandHandlers commandHandlerDefinitions() {
         return SagaCommandHandlersBuilder
                 .fromChannel("fulfilmentService")
-                .onMessage(FulfilOrderCommand.class,    this::fulfil)
+                // Deferred-reply overload: the handler sends its reply itself (now, or later via the poller).
+                .onMessage(FulfilOrderCommand.class,
+                        (CommandMessage<FulfilOrderCommand> cm, CommandReplyToken token) -> fulfil(cm, token))
                 .onMessage(CancelFulfilmentCommand.class, this::cancel)
                 .onMessage(RevokeEntitlementCommand.class, this::revokeEntitlement)
+                // Plain command from order-service; no reply.
+                .onMessage(CancelProvisioningCommand.class,
+                        (CommandMessage<CancelProvisioningCommand> cm) -> cancelProvisioning(cm))
+                .onMessage(ReleaseEntitlementCommand.class, this::releaseEntitlement)
                 .build();
     }
 
@@ -57,7 +91,6 @@ public class FulfilmentCommandHandlers {
      * Admin revoke (Phase 3): DIGITAL_SUBSCRIPTION calls OTT DELETE; SOFTWARE_LICENSE
      * is read-model-only (no external system). Success-outcome reply carrying orderId.
      */
-    @Transactional
     public Message revokeEntitlement(CommandMessage<RevokeEntitlementCommand> cm) {
         RevokeEntitlementCommand cmd = cm.getCommand();
         if ("DIGITAL_SUBSCRIPTION".equals(cmd.getProductType())
@@ -81,9 +114,21 @@ public class FulfilmentCommandHandlers {
 
     // ── Fulfil ────────────────────────────────────────────────────────────
 
-    @Transactional
-    public Message fulfil(CommandMessage<FulfilOrderCommand> cm) {
-        FulfilOrderCommand cmd = cm.getCommand();
+    public void fulfil(CommandMessage<FulfilOrderCommand> cm, CommandReplyToken token) {
+        Message reply = fulfilNowOrDefer(cm.getCommand(), token);
+        if (reply != null) {
+            replies.sendReplies(token, reply);
+        }
+    }
+
+    /** @return the reply to send now, or {@code null} if the reply is deferred to the provisioning poller. */
+    private Message fulfilNowOrDefer(FulfilOrderCommand cmd, CommandReplyToken token) {
+        // The user's cancel overtook this command (Design/13 §6): answer cancelled without calling anyone.
+        if (tasks.consumeTombstone(cmd.getOrderId())) {
+            log.info("Fulfil skipped, order already cancelled: orderId={}", cmd.getOrderId());
+            metrics.outcome("cancelled");
+            return withSuccess(new OrderProvisioningCancelled(cmd.getOrderId(), "USER_CANCEL: before fulfilment"));
+        }
 
         // Demo trigger (DD-26): an offerCode containing "FAIL" simulates a
         // non-transient delivery failure (route closed, damaged good, ...). It is a
@@ -109,7 +154,7 @@ public class FulfilmentCommandHandlers {
 
         return switch (type) {
             case PHYSICAL_GOOD        -> fulfilPhysical(cmd);
-            case DIGITAL_SUBSCRIPTION -> fulfilDigital(cmd);
+            case DIGITAL_SUBSCRIPTION -> fulfilDigital(cmd, token);
             case SOFTWARE_LICENSE     -> fulfilLicense(cmd);
         };
     }
@@ -127,24 +172,53 @@ public class FulfilmentCommandHandlers {
     }
 
     /**
-     * DIGITAL_SUBSCRIPTION: provision an OTT entitlement at the external
-     * {@code ott-service} (DD-27). On failure (OTT unavailable after bounded
-     * retries, or a 422 rejection) this does NOT forward-recover — it replies
-     * {@link OrderProvisioningFailed}, a success-outcome branch reply that parks
-     * the order in {@code FULFILMENT_FAILED} for admin-driven re-drive.
+     * DIGITAL_SUBSCRIPTION: one OTT attempt (circuit breaker + timeouts, no in-call retries).
+     * <ul>
+     *   <li>accepted (202) → reply deferred: an AWAITING_ACTIVATION task holds the token until OTT's
+     *       activation webhook (Design/06 §8), the deadline or a cancel;</li>
+     *   <li>already active (a repeat after an uncertain call) → {@link OrderFulfilled} now;</li>
+     *   <li>rejected (422) → {@link OrderFulfilmentFailed}{@code (PROVISIONING_REJECTED)} now → refund;</li>
+     *   <li>unavailable → reply deferred: a RETRYING provisioning task holds the token (deadline 2 h).</li>
+     * </ul>
      */
-    private Message fulfilDigital(FulfilOrderCommand cmd) {
-        Validity v = validity(cmd.getTermMonths());
-        OttProvisioningService.ProvisionResult r = ottProvisioning.provision(
-                cmd.getOrderId(), cmd.getSubscriberId(), cmd.getOfferCode(), v.from(), v.until());
-        if (!r.provisioned()) {
-            log.warn("Provision PARKED (FULFILMENT_FAILED): orderId={}, reason={}",
-                    cmd.getOrderId(), r.reason());
-            return withSuccess(new OrderProvisioningFailed(cmd.getOrderId(), r.reason(), r.detail()));
+    private Message fulfilDigital(FulfilOrderCommand cmd, CommandReplyToken token) {
+        Attempt a = ottProvisioning.attempt(cmd);
+        switch (a.outcome()) {
+            case ACCEPTED -> {
+                tasks.insertAwaiting(cmd, token, a.externalRef(), Instant.now().plus(provisioningProps.getDeadline()));
+                metrics.outcome("accepted");
+                log.info("OTT accepted DIGITAL_SUBSCRIPTION, reply held for its activation webhook: orderId={}, externalRef={}",
+                        cmd.getOrderId(), a.externalRef());
+                return null;
+            }
+            case PROVISIONED -> {
+                String fulfilmentRef = OttProvisioningService.newFulfilmentRef();
+                records.save(a.toRecord(fulfilmentRef));
+                metrics.outcome("provisioned");
+                log.info("Provisioned DIGITAL_SUBSCRIPTION: orderId={}, entitlement={}, externalRef={}",
+                        cmd.getOrderId(), fulfilmentRef, a.externalRef());
+                return withSuccess(a.toOrderFulfilled(fulfilmentRef));
+            }
+            case REJECTED -> {
+                metrics.outcome("rejected");
+                log.warn("Provisioning REJECTED by OTT: orderId={}, {}", cmd.getOrderId(), a.detail());
+                return withSuccess(new OrderFulfilmentFailed("PROVISIONING_REJECTED", a.detail()));
+            }
+            default -> {
+                Instant now = Instant.now();
+                boolean inserted = tasks.insertRetrying(cmd, token, a.reason(), a.detail(), a.mayHaveProvisioned(),
+                        now.plus(provisioningProps.delayAfter(1)), now.plus(provisioningProps.getDeadline()));
+                if (!inserted) {
+                    // A row already exists for this order: a second fulfil command for the same order.
+                    // Fail the message (it gets parked) rather than leave this saga without a reply.
+                    throw new IllegalStateException("Provisioning task already exists for order " + cmd.getOrderId());
+                }
+                metrics.outcome("deferred");
+                log.warn("Provisioning DEFERRED (OTT unavailable), reply held until provisioned / deadline / cancel: "
+                        + "orderId={}, {}", cmd.getOrderId(), a.detail());
+                return null;
+            }
         }
-        return withSuccess(new OrderFulfilled(cmd.getOrderId(),
-                ProductType.DIGITAL_SUBSCRIPTION.name(), r.fulfilmentRef(), null, null, r.externalRef(),
-                v.from(), v.until()));
     }
 
     /** SOFTWARE_LICENSE: the key was allocated by inventory at reserve; echo it. */
@@ -168,9 +242,55 @@ public class FulfilmentCommandHandlers {
                 v.from(), v.until()));
     }
 
+    // ── User cancel while provisioning (Design/13 §6) ───────────────────────
+
+    /**
+     * The user cancelled a digital order after the saga's last checkpoint. Locks the task row, so this waits
+     * for a poller that is finishing an attempt; the poller (or the fulfil handler, for a tombstone) sends
+     * the cancelled reply. No reply to this command.
+     */
+    public void cancelProvisioning(CommandMessage<CancelProvisioningCommand> cm) {
+        CancelProvisioningCommand cmd = cm.getCommand();
+        String orderId = cmd.getOrderId();
+        var row = tasks.lock(orderId);
+        if (row.isPresent()) {
+            if (tasks.requestCancel(orderId, cmd.getReason())) {
+                log.info("Cancel recorded on provisioning task: orderId={}", orderId);
+            } else {
+                log.info("Cancel no-op, provisioning already answered: orderId={}, status={}", orderId, row.get().status());
+            }
+            return;
+        }
+        if (records.existsByOrderId(orderId)) {
+            // Already fulfilled; the saga's last checkpoint (handleOrderFulfilled) sees the cancel flag.
+            log.info("Cancel no-op, order already fulfilled: orderId={}", orderId);
+            return;
+        }
+        tasks.insertCancelTombstone(orderId, cmd.getReason(), Instant.now().plus(provisioningProps.getTombstoneTtl()));
+        log.info("Cancel arrived before the fulfil command: tombstone recorded, orderId={}", orderId);
+    }
+
+    /**
+     * Saga step after a late cancel: the entitlement was provisioned, but the order is being refunded.
+     * Always succeeds; if OTT can't be reached the revoke is owed and retried by the poller.
+     */
+    public Message releaseEntitlement(CommandMessage<ReleaseEntitlementCommand> cm) {
+        ReleaseEntitlementCommand cmd = cm.getCommand();
+        records.findByOrderId(cmd.getOrderId()).forEach(rec -> {
+            rec.cancel();
+            records.save(rec);
+        });
+        if (ottProvisioning.revokeByOrder(cmd.getOrderId())) {
+            log.info("Entitlement released after cancel: orderId={}", cmd.getOrderId());
+        } else {
+            taskService.owesRevoke(cmd.getOrderId());
+            log.warn("Entitlement release failed at OTT; revoke owed and retried: orderId={}", cmd.getOrderId());
+        }
+        return withSuccess();
+    }
+
     // ── Cancel (compensation) ───────────────────────────────────────────────
 
-    @Transactional
     public Message cancel(CommandMessage<CancelFulfilmentCommand> cm) {
         CancelFulfilmentCommand cmd = cm.getCommand();
         String fulfilmentRef = cmd.getFulfilmentRef();

@@ -1,6 +1,7 @@
 package com.vab.billing;
 
 import com.vab.billing.command.BillingCommandHandlers;
+import com.vab.billing.payment.PaymentProperties;
 import io.eventuate.tram.commands.consumer.CommandDispatcher;
 import io.eventuate.tram.commands.consumer.CommandDispatcherFactory;
 import io.eventuate.tram.sagas.spring.participant.SagaParticipantConfiguration;
@@ -9,6 +10,8 @@ import io.eventuate.tram.spring.consumer.kafka.EventuateTramKafkaMessageConsumer
 import io.eventuate.tram.spring.messaging.producer.jdbc.TramMessageProducerJdbcConfiguration;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 
@@ -19,6 +22,8 @@ import org.springframework.context.annotation.Import;
  * compensates) against per-subscriber accounts. Every call writes a ledger row.
  */
 @SpringBootApplication
+@EnableScheduling
+@EnableConfigurationProperties(PaymentProperties.class)
 @Import({SagaParticipantConfiguration.class,
          TramMessageProducerJdbcConfiguration.class,
          EventuateTramKafkaMessageConsumerConfiguration.class,

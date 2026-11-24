@@ -6,11 +6,23 @@ spring:
   application:
     name: billing-service
 
+  # Design/15: bounded provider calls (they run inside Tram handler transactions).
+  http:
+    client:
+      connect-timeout: 2s
+      read-timeout: 5s
+
   datasource:
     url: jdbc:postgresql://localhost:5432/vab
     username: eventuate
     password: eventuate
     driver-class-name: org.postgresql.Driver
+    # Design/13 §8.1: bounded waits. A blocked pool fails in 3 s; a statement or lock wait can't hang a
+    # consumer forever (55P03 / 57014 are retried by shared-messaging's decorator).
+    hikari:
+      connection-timeout: 3000
+      data-source-properties:
+        options: "-c statement_timeout=10000 -c lock_timeout=3000"
 
   jpa:
     hibernate:
@@ -25,10 +37,48 @@ spring:
     locations: #flyway auto adds locations.
     - classpath:db/migration
 
+# ── Design/15: PAY_NOW through the payment provider (payment-sim) ──────────
+vab:
+  billing:
+    payments:
+      psp-base-url: ${PSP_BASE_URL:http://localhost:8091}
+      key-id: ${VAB_PSP_KEY_ID:vab_test_key}
+      key-secret: ${VAB_PSP_KEY_SECRET:vab_test_secret}
+      webhook-secret: ${VAB_PSP_WEBHOOK_SECRET:whsec_vab_test}
+      signature-tolerance: 5m              # replay window for a signed webhook timestamp
+      sweep-interval: 5s                   # expire unpaid intents, retry owed voids/refunds
+      batch-size: 10
+      retry-interval: 1m
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      psp:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 4s
+        slow-call-rate-threshold: 80
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 1
+        automatic-transition-from-open-to-half-open-enabled: true
+        ignore-exceptions:
+          - org.springframework.web.client.HttpClientErrorException
+
 eventuatelocal:
   kafka:
     bootstrap:
       servers: localhost:9094
+
+# Design/13 §8.3: pause a partition instead of buffering an unbounded backlog while a handler waits.
+eventuate:
+  local:
+    kafka:
+      consumer:
+        back-pressure:
+          low: 100
+          high: 500
 
 management:
   # §perf: no span export unless `obs` is active — old sampled traceparents on Kafka/HTTP hops
@@ -41,6 +91,14 @@ management:
     web:
       exposure:
         include: health,info
+  # Design/13 §9: a dead Eventuate subscription fails liveness (k8s restarts the pod; the message is redelivered).
+  endpoint:
+    health:
+      probes:
+        enabled: true          # livenessState / readinessState exist outside k8s too
+      group:
+        liveness:
+          include: livenessState,eventuateSubscriptions
 
 logging:
   level:

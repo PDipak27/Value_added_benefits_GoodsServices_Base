@@ -3,6 +3,7 @@ package com.vab.order.query.projection;
 import com.vab.events.order.OrderCancelled;
 import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
+import com.vab.events.order.OrderAwaitingPayment;
 import com.vab.events.order.OrderConfirmed;
 import com.vab.events.order.OrderEntitlementRevoked;
 import com.vab.events.order.OrderFailed;
@@ -125,6 +126,45 @@ class OrderProjectorTest {
             when(repo.findById("ord-x")).thenReturn(Optional.empty());
 
             projector.onConfirmed(envelope("ord-x", new OrderConfirmed(Instant.now(), 1, "PHYSICAL_GOOD")));
+
+            verify(repo, never()).save(any());
+        }
+    }
+
+    /** PAY_NOW (Design/15): the checkout link is visible only while PENDING_PAYMENT. */
+    @Nested
+    class AwaitingPayment {
+
+        private final Instant expires = Instant.parse("2026-11-16T10:08:00Z");
+
+        @Test
+        void shows_the_checkout_link() {
+            when(repo.findById("ord-1")).thenReturn(Optional.of(existingView("ord-1", 0, "PLACED")));
+
+            projector.onAwaitingPayment(envelope("ord-1", new OrderAwaitingPayment("http://psp/checkout/pi_1?cs=x", expires, 1)));
+
+            OrderView v = savedView();
+            assertThat(v.getStatus()).isEqualTo("PENDING_PAYMENT");
+            assertThat(v.getPayment().getCheckoutUrl()).isEqualTo("http://psp/checkout/pi_1?cs=x");
+            assertThat(v.getPayment().getExpiresAt()).isEqualTo(expires);
+        }
+
+        @Test
+        void confirm_removes_the_link() {
+            OrderView view = existingView("ord-1", 1, "PENDING_PAYMENT");
+            view.setPayment(new OrderView.Payment("http://psp/checkout/pi_1?cs=x", expires));
+            when(repo.findById("ord-1")).thenReturn(Optional.of(view));
+
+            projector.onConfirmed(envelope("ord-1", new OrderConfirmed(Instant.now(), 2, "PHYSICAL_GOOD")));
+
+            assertThat(savedView().getPayment()).isNull();
+        }
+
+        @Test
+        void a_stale_event_does_not_bring_the_link_back() {
+            when(repo.findById("ord-1")).thenReturn(Optional.of(existingView("ord-1", 2, "CONFIRMED")));
+
+            projector.onAwaitingPayment(envelope("ord-1", new OrderAwaitingPayment("http://psp/checkout/pi_1?cs=x", expires, 1)));
 
             verify(repo, never()).save(any());
         }

@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import java.lang.StackWalker.StackFrame;
+import java.net.URI;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -54,7 +55,13 @@ abstract class E2EBase {
         return (v == null || v.isBlank()) ? dflt : v;
     }
 
-    /** A Keycloak client-credentials access token for the provisioning client (§A-1). */
+    /** The partner API key OTT issued to VA-BAGS (Design/06 §8); EKS overrides it from the secret. */
+    protected static final String OTT_API_KEY = prop("vab.ott.api-key", "ott_test_key_vab");
+
+    /**
+     * A Keycloak client-credentials token for the (now unused) provisioning client. Only to prove the OTT
+     * partner API no longer accepts it.
+     */
     protected String clientCredentialsToken() {
         return given().baseUri(KEYCLOAK)
                 .contentType("application/x-www-form-urlencoded")
@@ -202,6 +209,9 @@ abstract class E2EBase {
      */
     protected String placeOrder(String subscriberId, String offerCode, String productType, String billingMode) {
         String orderID = placeOrder(subscriberId, offerCode, productType, billingMode, UUID.randomUUID().toString());
+        if ("PAY_NOW".equals(billingMode)) {
+            pay(orderID);   // Design/15: a PAY_NOW order waits until the subscriber pays on the provider's page
+        }
         //System.out.println("E2EBase: placed "+orderID);
         String callerMethodName = StackWalker.getInstance()
                 .walk(stream -> stream
@@ -221,6 +231,51 @@ abstract class E2EBase {
                 .header("Location", org.hamcrest.Matchers.containsString("/v1/orders/"))
                 .extract().path("orderId");
     }
+
+    /** A PAY_NOW order that nobody has paid yet: for decline, cancel-while-paying and provider-down cases. */
+    protected String placeUnpaidOrder(String subscriberId, String offerCode, String productType) {
+        return placeOrder(subscriberId, offerCode, productType, "PAY_NOW", UUID.randomUUID().toString());
+    }
+
+    // ── PAY_NOW checkout on payment-sim (Design/15) ─────────────────────────
+
+    /** Polls until billing has opened the payment intent and the order shows its checkout link. */
+    protected String awaitCheckoutUrl(String orderId) {
+        String[] url = new String[1];
+        await().atMost(SETTLE).pollInterval(Duration.ofSeconds(1)).pollDelay(Duration.ZERO).untilAsserted(() -> {
+            JsonPath order = getOrder(orderId);
+            assertThat(order.getString("status")).as("order %s left checkout before a link existed", orderId)
+                    .isIn("PLACED", "PENDING_PAYMENT");
+            url[0] = order.getString("payment.checkoutUrl");
+            assertThat(url[0]).isNotBlank();
+        });
+        return url[0];
+    }
+
+    /** Approves the payment as the subscriber would: checkout page, OTP, Pay. */
+    protected void pay(String orderId) {
+        decide(orderId, "approve");
+    }
+
+    protected void declinePayment(String orderId) {
+        decide(orderId, "decline");
+    }
+
+    private void decide(String orderId, String decision) {
+        String checkoutUrl = awaitCheckoutUrl(orderId);
+        URI uri = URI.create(checkoutUrl);
+        String clientSecret = uri.getQuery().replaceFirst("^cs=", "");
+        given().baseUri(uri.getScheme() + "://" + uri.getAuthority())
+                .contentType("application/x-www-form-urlencoded")
+                .formParam("cs", clientSecret)
+                .formParam("decision", decision)
+                .formParam("otp", PAYMENT_OTP)
+                .when().post(uri.getPath() + "/decision")
+                .then().statusCode(200);
+    }
+
+    /** payment-sim's simulated 3-D Secure OTP. */
+    private static final String PAYMENT_OTP = "123456";
 
     /** An order body priced from the public catalog detail (amount, currency, priceSnapshotId). */
     protected Map<String, Object> orderBody(String offerCode, String productType, String billingMode) {

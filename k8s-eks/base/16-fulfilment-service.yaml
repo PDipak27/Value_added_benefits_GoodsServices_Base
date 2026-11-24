@@ -1,5 +1,5 @@
-# Fulfilment — forward-only saga tail; provisions OTT entitlements with a Keycloak
-# client-credentials token (in-cluster token endpoint; secret from vabags-secrets).
+# Fulfilment — forward-only saga tail; provisions OTT entitlements with OTT's partner API key and receives
+# OTT's signed activation webhooks on /webhooks/ott (Design/06 §8; key + webhook secret from vabags-secrets).
 # Image is the bare name `vabags/fulfilment-service`; deploy.sh rewrites it to <ECR>/vabags/fulfilment-service:<git-sha>.
 apiVersion: apps/v1
 kind: Deployment
@@ -21,9 +21,6 @@ spec:
           envFrom:
             - configMapRef: { name: vabags-endpoints }
             - secretRef: { name: vabags-secrets }
-          env:
-            - name: KEYCLOAK_CLIENT_SECRET
-              valueFrom: { secretKeyRef: { name: vabags-secrets, key: KEYCLOAK_CLIENT_SECRET } }
           startupProbe:                    # slow JVM boot on small shared nodes
             httpGet: { path: /actuator/health/liveness, port: 8086 }
             periodSeconds: 10

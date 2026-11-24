@@ -108,6 +108,22 @@ class GatewaySecurityIT {
                 .expectHeader().valueEquals("X-Seen-Method", "POST");
     }
 
+    /** The test UI and its Keycloak config load without a token; /ui redirects to the page. */
+    @Test
+    void test_ui_is_public_and_tells_the_page_where_keycloak_is() {
+        client.get().uri("/ui/index.html").exchange()
+                .expectStatus().isOk()
+                .expectBody(String.class).value(html -> assertThat(html).contains("app.js"));
+        client.get().uri("/ui/config.json").exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.clientId").isEqualTo("vab-web")
+                .jsonPath("$.issuer").value(v -> assertThat((String) v).endsWith("/realms/vab"));
+        client.get().uri("/ui").exchange()
+                .expectStatus().is3xxRedirection()
+                .expectHeader().valueEquals(HttpHeaders.LOCATION, "/ui/index.html");
+    }
+
     /** Actuator health is reachable without a token (k8s probes hit it anonymously). */
     @Test
     void actuator_health_is_public() {
@@ -246,7 +262,7 @@ class GatewaySecurityIT {
 
     /** Back-office POSTs without a token are 401 (authentication comes before the role check). */
     @ParameterizedTest
-    @ValueSource(strings = {"retry-fulfilment", "complete-fulfilment", "revoke-entitlement"})
+    @ValueSource(strings = {"revoke-entitlement"})
     void anonymous_admin_action_gets_401(String action) {
         client.post().uri("/v1/orders/ord-1/" + action).exchange()
                 .expectStatus().isUnauthorized();
@@ -254,7 +270,7 @@ class GatewaySecurityIT {
 
     /** A subscriber without {@code vab-admin} is authenticated but forbidden: 403, not routed. */
     @ParameterizedTest
-    @ValueSource(strings = {"retry-fulfilment", "complete-fulfilment", "revoke-entitlement"})
+    @ValueSource(strings = {"revoke-entitlement"})
     void subscriber_admin_action_gets_403(String action) {
         client.mutateWith(subscriber()).post().uri("/v1/orders/ord-1/" + action).exchange()
                 .expectStatus().isForbidden()
@@ -263,7 +279,7 @@ class GatewaySecurityIT {
 
     /** With {@code ROLE_vab-admin} the back-office POSTs pass the edge and are routed to order-service. */
     @ParameterizedTest
-    @ValueSource(strings = {"retry-fulfilment", "complete-fulfilment", "revoke-entitlement"})
+    @ValueSource(strings = {"revoke-entitlement"})
     void admin_action_is_routed(String action) {
         client.mutateWith(admin()).post().uri("/v1/orders/ord-1/" + action)
                 .contentType(MediaType.APPLICATION_JSON).bodyValue("{}")
@@ -279,7 +295,7 @@ class GatewaySecurityIT {
     void keycloak_realm_role_grants_admin_and_bearer_is_relayed() {
         when(jwtDecoder.decode("admin-token")).thenReturn(Mono.just(keycloakJwt("admin-token", List.of("vab-admin"))));
 
-        client.post().uri("/v1/orders/ord-1/retry-fulfilment")
+        client.post().uri("/v1/orders/ord-1/revoke-entitlement")
                 .header(HttpHeaders.AUTHORIZATION, "Bearer admin-token")
                 .exchange()
                 .expectStatus().isOk()

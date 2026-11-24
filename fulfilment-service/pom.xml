@@ -21,6 +21,11 @@
             <groupId>com.vab</groupId>
             <artifactId>shared-observability</artifactId>
         </dependency>
+        <!-- Design/13 §4/§7: keeps Tram subscriptions alive (retry / infra-wait / DLQ), auto-configured -->
+        <dependency>
+            <groupId>com.vab</groupId>
+            <artifactId>shared-messaging</artifactId>
+        </dependency>
         <!-- §C2 scope C: Tram/Kafka traceparent propagation (Eventuate producer+consumer interceptors) -->
         <dependency>
             <groupId>io.eventuate.tram.springmicrometertracing</groupId>
@@ -59,6 +64,11 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <!-- Design/13 §6: circuit breakers "ott" / "keycloak" (registry configured from application.yml) -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-spring-boot3</artifactId>
         </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>

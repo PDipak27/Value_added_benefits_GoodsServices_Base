@@ -14,5 +14,6 @@
 | 10 | [10-backlog.md](10-backlog.md) | Backlog & implementation status (auth, query surface, platform, hardening) |
 | 11 | [11-deployment-k8s.md](11-deployment-k8s.md) | Local Kubernetes deployment — phased plan (containerize → k8s → CI/CD), concepts + interview crib |
 | 12 | [12-roadmap.md](12-roadmap.md) | Delivery & roadmap — CI/CD (GitHub Actions, Jenkins), EKS deployment, decisions, open work |
+| 15 | [15-pay-now-payment-provider.md](15-pay-now-payment-provider.md) | PAY_NOW via the payment-sim provider: checkout flow, billing state machine, webhooks (HMAC), billing-down handling |
 | — | [VA-BAGS-Code-Walkthrough.docx](VA-BAGS-Code-Walkthrough.docx) | Code walkthrough: module map, order flow, saga, security, change recipes |
 | — | [diagrams.mmd](diagrams.mmd) | All Mermaid diagrams in one raw file (paste into mermaid.live) |

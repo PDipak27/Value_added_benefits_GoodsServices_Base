@@ -5,13 +5,15 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 
 /**
  * Order failure paths (DD-26). Placement-time rejections (price verified against catalog): a tampered
- * price is 409, an unknown offer is 422. Saga failures that end the order FAILED: PAY_NOW authorize
- * decline (ACC_DEMO_DECLINE, priced 1500 &gt; 999), capture hard-decline at the pivot (ACC_DEMO_HARDDECLINE,
- * priced 777 — prior holds roll back, nothing captured), and BILL_TO_MOBILE account-limit failures
+ * price is 409, an unknown offer is 422. Saga failures that end the order FAILED: the subscriber declines
+ * on payment-sim's checkout page, payment-sim is down (ACC_DEMO_PSPDOWN, priced 503), capture hard-decline at
+ * the pivot (ACC_DEMO_HARDDECLINE, priced 777 — authorisation voided, hold released, nothing captured), and
+ * BILL_TO_MOBILE account-limit failures
  * (suspended account; amount over the credit limit). Post-pivot: a delivery failure forward-recovers
  * (refund + release) to CANCELLED_REFUNDED.
  */
@@ -37,14 +39,23 @@ class OrderFailurePathsE2E extends E2EBase {
         placeOrderRequest(sub(), body, UUID.randomUUID().toString()).then().statusCode(422);
     }
 
-    /** PAY_NOW above the 999 authorize threshold: billing declines and the saga ends FAILED (inventory hold released). */
+    /** PAY_NOW, the subscriber presses Decline on the checkout page: FAILED, inventory hold released. */
     @Test
-    void authorize_decline_over_threshold_fails() {
-        String orderId = placeOrder(sub(), "ACC_DEMO_DECLINE", "PHYSICAL_GOOD", "PAY_NOW");
+    void declined_at_checkout_fails() {
+        String orderId = placeUnpaidOrder(sub(), "ACC_CHARGER_30W", "PHYSICAL_GOOD");
+        declinePayment(orderId);
         awaitStatus(orderId, "FAILED");
     }
 
-    /** PAY_NOW at exactly 777 authorizes but hard-declines at capture (the pivot): the order ends FAILED. */
+    /** PAY_NOW while the payment provider is down (payment-sim refuses amount 503): FAILED, no checkout link ever shown. */
+    @Test
+    void payment_provider_down_fails_before_checkout() {
+        String orderId = placeUnpaidOrder(sub(), "ACC_DEMO_PSPDOWN", "PHYSICAL_GOOD");
+        awaitStatus(orderId, "FAILED");
+        assertThat(getOrder(orderId).getString("payment")).isNull();
+    }
+
+    /** PAY_NOW at exactly 777 is paid but hard-declines at capture (the pivot): the order ends FAILED. */
     @Test
     void capture_hard_decline_at_pivot_fails() {
         String orderId = placeOrder(sub(), "ACC_DEMO_HARDDECLINE", "PHYSICAL_GOOD", "PAY_NOW");

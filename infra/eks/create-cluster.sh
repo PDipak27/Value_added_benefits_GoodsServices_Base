@@ -15,7 +15,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-vabags-full}"
 JENKINS_ROLE_ARN="${JENKINS_ROLE_ARN:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-SERVICES="api-gateway order-service inventory-service billing-service notification-service catalog-service fulfilment-service ott-service"
+SERVICES="api-gateway order-service inventory-service billing-service notification-service catalog-service fulfilment-service ott-service payment-sim"
 
 # assumed-role ARN (arn:aws:sts::A:assumed-role/NAME/SESSION) → role ARN (arn:aws:iam::A:role/NAME)
 CALLER="$(aws sts get-caller-identity --query Arn --output text)"

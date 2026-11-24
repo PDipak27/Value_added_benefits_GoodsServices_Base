@@ -1,10 +1,10 @@
 package com.vab.billing.command;
 
 import com.vab.billing.domain.*;
-import com.vab.billing.domain.BillingLedgerEntry.Status;
-import com.vab.billing.domain.BillingLedgerEntry.Type;
+import com.vab.billing.payment.PaymentService;
 import com.vab.events.billing.*;
 import io.eventuate.tram.commands.consumer.CommandMessage;
+import io.eventuate.tram.commands.consumer.CommandReplyToken;
 import io.eventuate.tram.messaging.common.Message;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -14,21 +14,22 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 
 /**
- * Behaviour of the billing saga participant. Repositories are mocked; we assert
- * on the reply outcome/type (PAY_NOW vs BILL_TO_MOBILE flows) and on the ledger /
- * account rows written via {@link ArgumentCaptor}. {@link CommandMessage} is
+ * Behaviour of the billing saga participant. BILL_TO_MOBILE: repositories are mocked; we assert on the
+ * reply outcome/type and the account / next-cycle rows written via {@link ArgumentCaptor}. PAY_NOW is
+ * delegated to {@link PaymentService} (tested in {@code PaymentServiceTest}). {@link CommandMessage} is
  * mocked to feed the command payload.
  */
 @ExtendWith(MockitoExtension.class)
 class BillingCommandHandlersTest {
 
-    @Mock BillingLedgerRepository ledger;
+    @Mock PaymentService payments;
     @Mock BillingAccountRepository accounts;
     @Mock NextCycleLedgerRepository nextCycle;
 
@@ -36,7 +37,7 @@ class BillingCommandHandlersTest {
 
     @BeforeEach
     void setUp() {
-        handlers = new BillingCommandHandlers(ledger, accounts, nextCycle);
+        handlers = new BillingCommandHandlers(payments, accounts, nextCycle);
     }
 
     @SuppressWarnings("unchecked")
@@ -46,73 +47,43 @@ class BillingCommandHandlersTest {
         return cm;
     }
 
-    private BillingLedgerEntry savedLedger() {
-        ArgumentCaptor<BillingLedgerEntry> c = ArgumentCaptor.forClass(BillingLedgerEntry.class);
-        verify(ledger).save(c.capture());
-        return c.getValue();
-    }
-
+    /** PAY_NOW lives in PaymentService (Design/15): the handlers only unwrap the command and pass it on. */
     @Nested
-    class Authorize {
+    class PayNowDelegation {
 
         @Test
-        void within_limit_authorizes_and_writes_authorized_ledger_row() {
-            Message reply = handlers.authorize(cmd(
-                    new AuthorizeBillingCommand("ord-1", "sub-1", 500, "INR", "PAY_NOW")));
+        void create_intent_returns_the_payment_service_reply() {
+            CreatePaymentIntentCommand c = new CreatePaymentIntentCommand("ord-1", "sub-1", 500, "INR");
+            Message reply = mock(Message.class);
+            when(payments.createIntent(c)).thenReturn(reply);
 
-            BillingAuthorized body = Replies.assertSuccess(reply, BillingAuthorized.class);
-            assertThat(body.getAuthId()).startsWith("auth_");
-            BillingLedgerEntry row = savedLedger();
-            assertThat(row.getType()).isEqualTo(Type.AUTHORIZE);
-            assertThat(row.getStatus()).isEqualTo(Status.AUTHORIZED);
+            assertThat(handlers.createPaymentIntent(cmd(c))).isSameAs(reply);
         }
 
         @Test
-        void above_threshold_declines_with_failure_and_declined_row() {
-            // 1000 > DECLINE_THRESHOLD (999) => declined.
-            Message reply = handlers.authorize(cmd(
-                    new AuthorizeBillingCommand("ord-1", "sub-1", 1000, "INR", "PAY_NOW")));
+        void await_payment_hands_over_the_reply_token() {
+            AwaitPaymentCommand c = new AwaitPaymentCommand("ord-1", "pi_1");
+            CommandReplyToken token = new CommandReplyToken(Map.of(), "saga-reply");
 
-            BillingDeclined body = Replies.assertFailure(reply, BillingDeclined.class);
-            assertThat(body.getReason()).isEqualTo("AMOUNT_EXCEEDS_LIMIT");
-            assertThat(savedLedger().getStatus()).isEqualTo(Status.DECLINED);
-        }
-    }
+            handlers.awaitPayment(cmd(c), token);
 
-    @Nested
-    class Capture {
-
-        @Test
-        void normal_amount_captures() {
-            Message reply = handlers.capture(cmd(new CaptureBillingCommand("auth_x", 500, "INR")));
-
-            BillingCaptured body = Replies.assertSuccess(reply, BillingCaptured.class);
-            assertThat(body.getCaptureId()).startsWith("cap_");
-            BillingLedgerEntry row = savedLedger();
-            assertThat(row.getType()).isEqualTo(Type.CAPTURE);
-            assertThat(row.getStatus()).isEqualTo(Status.CAPTURED);
+            verify(payments).awaitPayment(c, token);
         }
 
         @Test
-        void magic_777_hard_declines_the_pivot_with_failure() {
-            // DD-26: capture is the pivot. A hard decline replies withFailure — the
-            // pivot did not commit, so the saga rolls back to FAILED (no refund).
-            Message reply = handlers.capture(cmd(new CaptureBillingCommand("auth_x", 777, "INR")));
+        void cancel_void_capture_and_refund_are_delegated() {
+            handlers.cancelPayment(cmd(new CancelPaymentCommand("ord-1", "USER_CANCEL")));
+            handlers.voidPayment(cmd(new VoidPaymentCommand("pi_1", "rollback")));
+            CaptureBillingCommand capture = new CaptureBillingCommand("pi_1", 500, "INR");
+            handlers.capture(cmd(capture));
+            RefundBillingCommand refund = new RefundBillingCommand("pi_1", 500, "INR", "USER_CANCEL");
+            handlers.refund(cmd(refund));
 
-            BillingCaptureFailed body = Replies.assertFailure(reply, BillingCaptureFailed.class);
-            assertThat(body.getReason()).isEqualTo("CAPTURE_DECLINED");
-            assertThat(savedLedger().getStatus()).isEqualTo(Status.DECLINED);
+            verify(payments).cancelPayment("ord-1", "USER_CANCEL");
+            verify(payments).voidPayment("pi_1", "rollback");
+            verify(payments).capture(capture);
+            verify(payments).refund(refund);
         }
-    }
-
-    @Test
-    void refund_writes_refunded_row_and_replies_refunded() {
-        Message reply = handlers.refund(cmd(new RefundBillingCommand("auth_x", 500, "INR", "compensation")));
-
-        Replies.assertSuccess(reply, BillingRefunded.class);
-        BillingLedgerEntry row = savedLedger();
-        assertThat(row.getType()).isEqualTo(Type.REFUND);
-        assertThat(row.getStatus()).isEqualTo(Status.REFUNDED);
     }
 
     @Nested

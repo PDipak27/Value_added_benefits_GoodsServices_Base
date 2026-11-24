@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.vab</groupId>
+        <artifactId>va-bags</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>shared-messaging</artifactId>
+    <name>VA-BAGS :: Shared Messaging</name>
+
+    <!--
+      Design/13 §4 / §7: a Tram MessageHandlerDecorator that keeps every consumer alive —
+      blocking retry for contention, unbounded wait while our own infrastructure is down,
+      and parking (eventuate.parked_message) for poison messages — plus the DLQ store and an
+      Eventuate-subscription health indicator. Auto-configured; a Tram service just adds this
+      dependency.
+    -->
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.eventuate.tram.core</groupId>
+            <artifactId>eventuate-tram-consumer-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.eventuate.tram.core</groupId>
+            <artifactId>eventuate-tram-messaging</artifactId>
+        </dependency>
+        <!-- Optional: health indicator (reflection over the Kafka consumers) and metrics. -->
+        <dependency>
+            <groupId>io.eventuate.messaging.kafka</groupId>
+            <artifactId>eventuate-messaging-kafka-consumer</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-actuator</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>

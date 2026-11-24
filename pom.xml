@@ -13,6 +13,7 @@
     <modules>
         <module>shared-events</module>
         <module>shared-observability</module>
+        <module>shared-messaging</module>
         <module>api-gateway</module>
         <module>catalog-service</module>
         <module>order-service</module>
@@ -21,6 +22,7 @@
         <module>fulfilment-service</module>
         <module>notification-service</module>
         <module>ott-service</module>
+        <module>payment-sim</module>
         <module>e2e-tests</module>
     </modules>
 
@@ -95,6 +97,18 @@
                 <groupId>com.vab</groupId>
                 <artifactId>shared-observability</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.vab</groupId>
+                <artifactId>shared-messaging</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- Design/13 §6: circuit breaker around the OTT / Keycloak calls (fulfilment-service). -->
+            <dependency>
+                <groupId>io.github.resilience4j</groupId>
+                <artifactId>resilience4j-spring-boot3</artifactId>
+                <version>2.1.0</version>
             </dependency>
 
             <!-- §C2 observability: structured JSON logging + direct push to Loki -->

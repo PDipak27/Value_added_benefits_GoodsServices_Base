@@ -248,47 +248,7 @@ class OrderCommandControllerTest {
         mvc().perform(post("/v1/orders/ord-1/cancel")).andExpect(status().isConflict());
     }
 
-    // ── Back-office: retry / complete / revoke (DD-27, Phase 3) ─────────────
-
-    /** Retry on a parked order re-drives fulfilment: 202. */
-    @Test
-    void retry_fulfilment_is_202() throws Exception {
-        loginAsAdmin();
-
-        mvc().perform(post("/v1/orders/ord-1/retry-fulfilment")).andExpect(status().isAccepted());
-        verify(commandService).retryFulfilment("ord-1");
-    }
-
-    /** Retry on an order that is not FULFILMENT_FAILED is 409. */
-    @Test
-    void retry_fulfilment_wrong_state_is_409() throws Exception {
-        loginAsAdmin();
-        doThrow(new IllegalStateException("not parked")).when(commandService).retryFulfilment("ord-1");
-
-        mvc().perform(post("/v1/orders/ord-1/retry-fulfilment")).andExpect(status().isConflict());
-    }
-
-    /** Manual complete passes the out-of-band externalRef from the body to the service: 202. */
-    @Test
-    void complete_fulfilment_passes_external_ref() throws Exception {
-        loginAsAdmin();
-
-        mvc().perform(post("/v1/orders/ord-1/complete-fulfilment")
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"externalRef\":\"OTT-123\"}"))
-                .andExpect(status().isAccepted());
-        verify(commandService).completeFulfilment("ord-1", "OTT-123");
-    }
-
-    /** Manual complete on an order that is not parked is 409. */
-    @Test
-    void complete_fulfilment_wrong_state_is_409() throws Exception {
-        loginAsAdmin();
-        doThrow(new IllegalStateException("not parked")).when(commandService).completeFulfilment("ord-1", "OTT-123");
-
-        mvc().perform(post("/v1/orders/ord-1/complete-fulfilment")
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"externalRef\":\"OTT-123\"}"))
-                .andExpect(status().isConflict());
-    }
+    // ── Back-office: revoke (Phase 3) ───────────────────────────────────────
 
     /** Revoke on a COMPLETED order requests the entitlement revoke: 202. */
     @Test

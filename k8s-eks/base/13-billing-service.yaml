@@ -1,4 +1,5 @@
-# Billing — saga participant (authorize / capture = pivot / refund / BTM ledger).
+# Billing — saga participant (PAY_NOW via payment-sim: intent / await payment / capture = pivot / void / refund;
+# BTM ledger) and the payment provider's webhook endpoint (/webhooks/psp, HMAC-verified).
 # Image is the bare name `vabags/billing-service`; deploy.sh rewrites it to <ECR>/vabags/billing-service:<git-sha>.
 apiVersion: apps/v1
 kind: Deployment

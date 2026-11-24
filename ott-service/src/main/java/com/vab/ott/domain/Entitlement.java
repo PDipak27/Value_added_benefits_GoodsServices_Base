@@ -14,7 +14,8 @@ import java.time.Instant;
 @Table(name = "entitlements", schema = "ott")
 public class Entitlement {
 
-    public enum Status { ACTIVE, REVOKED }
+    /** PENDING until the activator decides (Design/06 §8); then ACTIVE or REJECTED. Any of them can be REVOKED. */
+    public enum Status { PENDING, ACTIVE, REJECTED, REVOKED }
 
     @Id
     @Column(name = "external_ref", length = 64)
@@ -46,6 +47,12 @@ public class Entitlement {
     @Column(name = "revoked_at")
     private Instant revokedAt;
 
+    @Column(name = "activated_at")
+    private Instant activatedAt;
+
+    @Column(name = "rejection_reason", length = 200)
+    private String rejectionReason;
+
     protected Entitlement() {}
 
     public Entitlement(String externalRef, String orderId, String subscriberId, String offerCode,
@@ -54,13 +61,29 @@ public class Entitlement {
         this.orderId       = orderId;
         this.subscriberId  = subscriberId;
         this.offerCode     = offerCode;
-        this.status        = Status.ACTIVE;
+        this.status        = Status.PENDING;
         this.provisionedAt = Instant.now();
         this.validFrom     = validFrom;
         this.validUntil    = validUntil;
     }
 
-    /** Idempotent revoke: ACTIVE → REVOKED, stamping revokedAt. A no-op if already revoked. */
+    /** PENDING → ACTIVE. @return false if it was no longer pending (e.g. revoked meanwhile). */
+    public boolean activate() {
+        if (status != Status.PENDING) return false;
+        status      = Status.ACTIVE;
+        activatedAt = Instant.now();
+        return true;
+    }
+
+    /** PENDING → REJECTED. @return false if it was no longer pending. */
+    public boolean reject(String reason) {
+        if (status != Status.PENDING) return false;
+        status          = Status.REJECTED;
+        rejectionReason = reason;
+        return true;
+    }
+
+    /** Idempotent revoke: → REVOKED, stamping revokedAt. A no-op if already revoked. */
     public void revoke() {
         if (this.status == Status.REVOKED) return;
         this.status    = Status.REVOKED;
@@ -76,4 +99,6 @@ public class Entitlement {
     public Instant getValidFrom()     { return validFrom; }
     public Instant getValidUntil()    { return validUntil; }
     public Instant getRevokedAt()     { return revokedAt; }
+    public Instant getActivatedAt()   { return activatedAt; }
+    public String  getRejectionReason() { return rejectionReason; }
 }

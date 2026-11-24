@@ -7,7 +7,7 @@
 # exist AFTER the load balancers are created, yet Keycloak (KC_HOSTNAME → token `iss`), every
 # resource server (issuer check) and the OTT login redirect need them BEFORE they boot. So:
 #   1. platform (namespace + gp3 StorageClass)
-#   2. the three public NLB Services → wait for their hostnames
+#   2. the four public NLB Services → wait for their hostnames
 #   3. vabags-public ConfigMap (public URLs)                    — refreshed every run
 #   4. vabags-secrets / gateway-tls / keycloak-tls              — created ONCE, then reused
 #      (Postgres only reads POSTGRES_PASSWORD on first init, so rotating means a fresh PVC)
@@ -28,7 +28,7 @@ K8S="$ROOT/k8s-eks"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-SERVICES="api-gateway order-service inventory-service billing-service notification-service catalog-service fulfilment-service ott-service"
+SERVICES="api-gateway order-service inventory-service billing-service notification-service catalog-service fulfilment-service ott-service payment-sim"
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -52,10 +52,12 @@ lb_host() {   # wait up to ~6 min for an NLB hostname
 GW_HOST="$(lb_host api-gateway-public)"
 KC_HOST="$(lb_host keycloak-public)"
 OTT_HOST="$(lb_host ott-public)"
+PAY_HOST="$(lb_host payment-public)"
 
 GATEWAY_PUBLIC_URL="https://${GW_HOST}"
 KEYCLOAK_PUBLIC_URL="https://${KC_HOST}"
 OTT_PUBLIC_URL="http://${OTT_HOST}"
+PAYMENT_SIM_PUBLIC_URL="http://${PAY_HOST}"
 
 # ── 3. public-URL config ────────────────────────────────────────────────────
 log "vabags-public ConfigMap"
@@ -65,6 +67,7 @@ kubectl -n "$NS" create configmap vabags-public \
   --from-literal=KEYCLOAK_ISSUER="${KEYCLOAK_PUBLIC_URL}/realms/vab" \
   --from-literal=KC_HOSTNAME="$KEYCLOAK_PUBLIC_URL" \
   --from-literal=OTT_PUBLIC_URL="$OTT_PUBLIC_URL" \
+  --from-literal=PAYMENT_SIM_PUBLIC_URL="$PAYMENT_SIM_PUBLIC_URL" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # ── 4. secrets (create once) ────────────────────────────────────────────────
@@ -79,6 +82,18 @@ if ! kubectl -n "$NS" get secret vabags-secrets >/dev/null 2>&1; then
 else
   log "vabags-secrets exists — reusing"
 fi
+# Design/15: billing and payment-sim share the merchant API key and the webhook HMAC secret. Patched into an
+# existing secret too, so clusters created before payment-sim get them.
+ensure_secret_key() {
+  if [ -z "$(kubectl -n "$NS" get secret vabags-secrets -o jsonpath="{.data.$1}")" ]; then
+    kubectl -n "$NS" patch secret vabags-secrets --type merge -p "{\"stringData\":{\"$1\":\"$(rand)\"}}"
+  fi
+}
+ensure_secret_key VAB_PSP_KEY_SECRET
+ensure_secret_key VAB_PSP_WEBHOOK_SECRET
+# Design/06 §8: the partner API key OTT issues to VA-BAGS, and the secret OTT signs its webhooks with.
+ensure_secret_key VAB_OTT_API_KEY
+ensure_secret_key VAB_OTT_WEBHOOK_SECRET
 
 if ! kubectl -n "$NS" get secret gateway-tls >/dev/null 2>&1 || ! kubectl -n "$NS" get secret keycloak-tls >/dev/null 2>&1; then
   log "TLS secrets (self-signed for *.elb.${AWS_REGION}.amazonaws.com)"
@@ -99,6 +114,7 @@ secret_val() { kubectl -n "$NS" get secret vabags-secrets -o jsonpath="{.data.$1
 log "keycloak-realm ConfigMap (OTT redirect → $OTT_PUBLIC_URL)"
 PROV_SECRET="$(secret_val KEYCLOAK_CLIENT_SECRET)"
 sed -e "s#http://localhost:8087#${OTT_PUBLIC_URL}#g" \
+    -e "s#https://localhost:8089#${GATEWAY_PUBLIC_URL}#g" \
     -e "s#\"vab-provisioning-secret\"#\"${PROV_SECRET}\"#g" \
     "$ROOT/deploy/keycloak/vab-realm.json" > "$WORK/vab-realm.json"
 kubectl -n "$NS" create configmap keycloak-realm --from-file=vab-realm.json="$WORK/vab-realm.json" \
@@ -106,7 +122,7 @@ kubectl -n "$NS" create configmap keycloak-realm --from-file=vab-realm.json="$WO
 
 # ── 6. render + apply ───────────────────────────────────────────────────────
 log "render overlay → images ${REGISTRY}/vabags/<svc>:${TAG}"
-PUBLIC_HASH="$(printf '%s|%s|%s' "$GATEWAY_PUBLIC_URL" "$KEYCLOAK_PUBLIC_URL" "$OTT_PUBLIC_URL" | sha256sum | cut -c1-16)"
+PUBLIC_HASH="$(printf '%s|%s|%s|%s' "$GATEWAY_PUBLIC_URL" "$KEYCLOAK_PUBLIC_URL" "$OTT_PUBLIC_URL" "$PAYMENT_SIM_PUBLIC_URL" | sha256sum | cut -c1-16)"
 kubectl kustomize --load-restrictor=LoadRestrictionsNone "$K8S/overlays/eks" > "$WORK/rendered.yaml"
 for s in $SERVICES; do
   sed -i -E "s#image: vabags/${s}\$#image: ${REGISTRY}/vabags/${s}:${TAG}#" "$WORK/rendered.yaml"
@@ -132,4 +148,5 @@ VA-BAGS is up (self-signed TLS — accept the browser warning once per host):
   Gateway   ${GATEWAY_PUBLIC_URL}/v1/offers
   Keycloak  ${KEYCLOAK_PUBLIC_URL}/realms/vab/.well-known/openid-configuration
   OTT       ${OTT_PUBLIC_URL}/v1/videos     (open Keycloak once first so the browser trusts it)
+  Payments  ${PAYMENT_SIM_PUBLIC_URL}       (checkout pages; an order's link is in GET /v1/orders/{id})
 EOF

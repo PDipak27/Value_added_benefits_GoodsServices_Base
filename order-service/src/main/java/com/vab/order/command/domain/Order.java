@@ -92,6 +92,13 @@ public class Order {
     @Column(name = "valid_until")
     private Instant validUntil;     // null = perpetual
 
+    /** PAY_NOW (Design/15): where the subscriber pays, and until when; set while PENDING_PAYMENT. */
+    @Column(name = "checkout_url", columnDefinition = "text")
+    private String checkoutUrl;
+
+    @Column(name = "payment_expires_at")
+    private Instant paymentExpiresAt;
+
     /** Set when an admin revokes the entitlement (Phase 3); order stays COMPLETED. */
     @Column(name = "entitlement_revoked_at")
     private Instant entitlementRevokedAt;
@@ -101,10 +108,6 @@ public class Order {
 
     @Column(name = "failure_reason", columnDefinition = "text")
     private String failureReason;
-
-    /** Timestamp of the last fulfilment attempt; stamped each time the order parks (DD-27). */
-    @Column(name = "last_attempt_at")
-    private Instant lastAttemptAt;
 
     protected Order() {}  // JPA
 
@@ -127,6 +130,13 @@ public class Order {
     }
 
     // ── State transitions ─────────────────────────────────────────────────
+
+    /** PAY_NOW: a payment intent is open; the subscriber pays at {@code checkoutUrl} before {@code expiresAt}. */
+    public void awaitPayment(String checkoutUrl, Instant expiresAt) {
+        this.status           = OrderStatus.PENDING_PAYMENT;
+        this.checkoutUrl      = checkoutUrl;
+        this.paymentExpiresAt = expiresAt;
+    }
 
     /** Intermediate confirm: inventory settled and (PAY_NOW) authorized, before fulfilment. */
     public void confirm(Instant confirmedAt) {
@@ -191,15 +201,20 @@ public class Order {
     }
 
     /**
-     * Non-terminal park after a failed OTT provisioning (DD-27). The charge stands
-     * (no refund — diverges from DD-26); an admin re-drives or manually completes.
-     * Reuses {@code failedStep}/{@code failureReason} and stamps the attempt time.
+     * Past the saga's pre-fulfil checkpoint, a DIGITAL_SUBSCRIPTION's provisioning may be waiting for OTT
+     * (Design/13 §6): a cancel must be forwarded to fulfilment, not just flagged.
      */
-    public void fulfilmentFailed(String reason) {
-        this.status        = OrderStatus.FULFILMENT_FAILED;
-        this.failedStep    = "FULFIL_PROVISION";
-        this.failureReason = reason;
-        this.lastAttemptAt = Instant.now();
+    public boolean isWaitingOnProvisioning() {
+        return "DIGITAL_SUBSCRIPTION".equals(productType) && status == OrderStatus.CONFIRMED;
+    }
+
+    /**
+     * A PAY_NOW order the subscriber may not have paid yet (Design/15): a cancel must reach billing, which
+     * closes the payment intent and answers the waiting saga.
+     */
+    public boolean isPaymentPending() {
+        return "PAY_NOW".equals(billingMode)
+                && (status == OrderStatus.PLACED || status == OrderStatus.PENDING_PAYMENT);
     }
 
     private boolean isTerminal() {
@@ -235,8 +250,9 @@ public class Order {
     public Instant     getEntitlementRevokedAt() { return entitlementRevokedAt; }
     public boolean     isEntitlementRevoked()    { return entitlementRevokedAt != null; }
     public String      getFailedStep()      { return failedStep; }
+    public String      getCheckoutUrl()     { return checkoutUrl; }
+    public Instant     getPaymentExpiresAt() { return paymentExpiresAt; }
 
     public void setTermMonths(Integer termMonths) { this.termMonths = termMonths; }
     public String      getFailureReason()   { return failureReason; }
-    public Instant     getLastAttemptAt()   { return lastAttemptAt; }
 }

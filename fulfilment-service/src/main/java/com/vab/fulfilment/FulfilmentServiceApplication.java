@@ -1,6 +1,7 @@
 package com.vab.fulfilment;
 
 import com.vab.fulfilment.command.FulfilmentCommandHandlers;
+import com.vab.fulfilment.provisioning.ProvisioningProperties;
 import io.eventuate.tram.commands.consumer.CommandDispatcher;
 import io.eventuate.tram.commands.consumer.CommandDispatcherFactory;
 import io.eventuate.tram.sagas.spring.participant.SagaParticipantConfiguration;
@@ -9,8 +10,10 @@ import io.eventuate.tram.spring.consumer.kafka.EventuateTramKafkaMessageConsumer
 import io.eventuate.tram.spring.messaging.producer.jdbc.TramMessageProducerJdbcConfiguration;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Fulfilment Service — saga participant on the "fulfilmentService" channel
@@ -23,8 +26,12 @@ import org.springframework.context.annotation.Import;
  * </ul>
  * Keeping the dispatch <em>inside</em> the participant means new product types add
  * a branch here, never a new saga step — the saga stays one linear orchestrator.
+ *
+ * <p>{@code @EnableScheduling} drives the provisioning poller (Design/13 §6).
  */
 @SpringBootApplication
+@EnableScheduling
+@EnableConfigurationProperties(ProvisioningProperties.class)
 @Import({SagaParticipantConfiguration.class,
          TramMessageProducerJdbcConfiguration.class,
          EventuateTramKafkaMessageConsumerConfiguration.class,

@@ -51,17 +51,17 @@ public class CatalogSeeder implements ApplicationRunner {
                     "Three months of Hotstar.", ProductType.DIGITAL_SUBSCRIPTION, 499, "INR",
                     "ps_2026_05_hotstar3m", OfferStatus.PUBLISHED,
                     PlanTier.BASIC, "IN", null, KycLevel.MINIMAL).withTermMonths(3),
-            // OTT provisioning-failure demo triggers (DD-27). The offerCode is
+            // OTT provisioning-failure demo triggers (Design/13 §6). The offerCode is
             // forwarded to ott-service, which keys its 503/422 triggers off it:
-            // OTTDOWN → 503 (retry then park), OTTBAD → 422 (park, no retry). Both
-            // park the order in FULFILMENT_FAILED. Inventory rows: V5 migration.
+            // OTTDOWN → 503: provisioning deferred and retried until the deadline, then refunded;
+            // OTTBAD → 422: rejected, refunded at once. Inventory rows: V5 migration.
             new Offer("OTT_OTTDOWN_1M", "OTT (provider-down demo)",
-                    "Provisioning fails with 503 to exercise the FULFILMENT_FAILED park (DD-27).",
+                    "Provisioning fails with 503: deferred, retried until the deadline, then refunded (Design/13 §6).",
                     ProductType.DIGITAL_SUBSCRIPTION, 499, "INR",
                     "ps_2026_05_ottdown1m", OfferStatus.PUBLISHED,
                     PlanTier.BASIC, "IN", null, KycLevel.MINIMAL).withTermMonths(1),
             new Offer("OTT_OTTBAD_1M", "OTT (provider-reject demo)",
-                    "Provisioning fails with 422 to exercise the FULFILMENT_FAILED park (DD-27).",
+                    "Provisioning fails with 422: rejected and refunded (Design/13 §6).",
                     ProductType.DIGITAL_SUBSCRIPTION, 499, "INR",
                     "ps_2026_05_ottbad1m", OfferStatus.PUBLISHED,
                     PlanTier.BASIC, "IN", null, KycLevel.MINIMAL).withTermMonths(1),
@@ -87,12 +87,13 @@ public class CatalogSeeder implements ApplicationRunner {
                     "USB-C 30W fast charger.", ProductType.PHYSICAL_GOOD, 499, "INR",
                     "ps_2026_10_charger30w", OfferStatus.PUBLISHED,
                     PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
-            // Billing demo triggers (DD-26). Order prices are verified against catalog, so
-            // the triggers are offers *priced* at the trigger values (inventory: V6):
-            // > 999 → PAY_NOW authorize declines (and exceeds the default BILL_TO_MOBILE
-            // credit limit of 1000); exactly 777 → capture hard-declines at the pivot.
+            // Billing demo triggers (DD-26, Design/15). Order prices are verified against catalog, so
+            // the triggers are offers *priced* at the trigger values (inventory: V6, V7). A PAY_NOW
+            // decline is the subscriber pressing "Decline" on payment-sim's checkout page.
+            // 1500 → exceeds the default BILL_TO_MOBILE credit limit of 1000; 777 → payment-sim
+            // declines the capture at the pivot; 503 → payment-sim is "down" and refuses the intent.
             new Offer("ACC_DEMO_DECLINE", "Demo: billing decline",
-                    "Priced above the authorize threshold to exercise a declined payment.",
+                    "Priced above the default BILL_TO_MOBILE credit limit to exercise a declined charge.",
                     ProductType.PHYSICAL_GOOD, 1500, "INR",
                     "ps_2026_10_demodecline", OfferStatus.PUBLISHED,
                     PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
@@ -100,6 +101,11 @@ public class CatalogSeeder implements ApplicationRunner {
                     "Priced at 777 to exercise a capture failure at the saga pivot.",
                     ProductType.PHYSICAL_GOOD, 777, "INR",
                     "ps_2026_10_demoharddecline", OfferStatus.PUBLISHED,
+                    PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
+            new Offer("ACC_DEMO_PSPDOWN", "Demo: payment provider down",
+                    "Priced at 503 to exercise the payment provider being unavailable at checkout.",
+                    ProductType.PHYSICAL_GOOD, 503, "INR",
+                    "ps_2026_11_demopspdown", OfferStatus.PUBLISHED,
                     PlanTier.BASIC, "IN", null, KycLevel.MINIMAL),
             // Fulfilment demo trigger: an offerCode containing "FAIL" makes fulfil reply
             // DELIVERY_FAILED after the pivot → forward-recovery to CANCELLED_REFUNDED.

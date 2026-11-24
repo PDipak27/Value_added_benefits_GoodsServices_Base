@@ -19,7 +19,8 @@ public class PlaceOrderSagaData {
 
     // Populated as Saga progresses
     private String reservationId;   // PAY_NOW reserve / BILL_TO_MOBILE allocate
-    private String authId;          // PAY_NOW authorize
+    private String paymentIntentId; // PAY_NOW: the provider's intent (Design/15)
+    private String authId;          // PAY_NOW: the authorised payment to capture (= the intent id)
     private String captureId;       // PAY_NOW capture
     private String ledgerEntryId;   // BILL_TO_MOBILE next-cycle charge
 
@@ -29,11 +30,9 @@ public class PlaceOrderSagaData {
     private boolean forwardRecover;
     private String  cancelReason;
 
-    // Park branch (DD-27): set post-pivot when OTT provisioning fails
-    // (OrderProvisioningFailed reply). Distinct from forwardRecover — the charge is
-    // NOT unwound; finalize parks the order in FULFILMENT_FAILED for admin re-drive.
-    private boolean provisioningFailed;
-    private String  provisioningFailureReason;
+    // Design/13 §6: a DIGITAL_SUBSCRIPTION was provisioned but the user's cancel won before
+    // finalize → revoke the entitlement (release step) before the refund.
+    private boolean entitlementRevokeRequired;
 
     // Fulfilment outcome (exactly one artifact populated, per productType)
     private String  fulfilmentRef;
@@ -58,6 +57,8 @@ public class PlaceOrderSagaData {
         this.termMonths   = termMonths;
     }
 
+    public String getPaymentIntentId() { return paymentIntentId; }
+    public void   setPaymentIntentId(String paymentIntentId) { this.paymentIntentId = paymentIntentId; }
     public String getOrderId()       { return orderId; }
     public String getSubscriberId()  { return subscriberId; }
     public String getOfferCode()     { return offerCode; }
@@ -70,8 +71,7 @@ public class PlaceOrderSagaData {
     public String  getCaptureId()    { return captureId; }
     public boolean isForwardRecover(){ return forwardRecover; }
     public String  getCancelReason() { return cancelReason; }
-    public boolean isProvisioningFailed()       { return provisioningFailed; }
-    public String  getProvisioningFailureReason(){ return provisioningFailureReason; }
+    public boolean isEntitlementRevokeRequired() { return entitlementRevokeRequired; }
     public String getLedgerEntryId() { return ledgerEntryId; }
     public String getFulfilmentRef() { return fulfilmentRef; }
     public String getTrackingRef()   { return trackingRef; }
@@ -87,8 +87,7 @@ public class PlaceOrderSagaData {
     public void setCaptureId(String captureId)         { this.captureId = captureId; }
     public void setForwardRecover(boolean forwardRecover) { this.forwardRecover = forwardRecover; }
     public void setCancelReason(String cancelReason)   { this.cancelReason = cancelReason; }
-    public void setProvisioningFailed(boolean provisioningFailed) { this.provisioningFailed = provisioningFailed; }
-    public void setProvisioningFailureReason(String reason)       { this.provisioningFailureReason = reason; }
+    public void setEntitlementRevokeRequired(boolean v) { this.entitlementRevokeRequired = v; }
     public void setLedgerEntryId(String ledgerEntryId) { this.ledgerEntryId = ledgerEntryId; }
     public void setFulfilmentRef(String fulfilmentRef) { this.fulfilmentRef = fulfilmentRef; }
     public void setTrackingRef(String trackingRef)     { this.trackingRef = trackingRef; }

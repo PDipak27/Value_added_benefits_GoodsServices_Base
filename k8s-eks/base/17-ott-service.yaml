@@ -1,4 +1,4 @@
-# OTT — the "third-party" provider: M2M provisioning API (resource server, aud=ott-service) and
+# OTT — the "third-party" provider: partner entitlement API (API key) + signed webhooks to fulfilment, and
 # the subscriber video surface (OIDC login client, `eks` profile = split-horizon endpoints).
 # Browsers reach it through the ott-public NLB (plain HTTP).
 # Image is the bare name `vabags/ott-service`; deploy.sh rewrites it to <ECR>/vabags/ott-service:<git-sha>.

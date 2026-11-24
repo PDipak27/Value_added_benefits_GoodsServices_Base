@@ -21,6 +21,16 @@
             <groupId>com.vab</groupId>
             <artifactId>shared-observability</artifactId>
         </dependency>
+        <!-- Design/13 §4/§7: keeps Tram subscriptions alive (retry / infra-wait / DLQ), auto-configured -->
+        <dependency>
+            <groupId>com.vab</groupId>
+            <artifactId>shared-messaging</artifactId>
+        </dependency>
+        <!-- Design/15: circuit breaker on the payment provider. -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-spring-boot3</artifactId>
+        </dependency>
         <!-- §C2 scope C: Tram/Kafka traceparent propagation (Eventuate producer+consumer interceptors) -->
         <dependency>
             <groupId>io.eventuate.tram.springmicrometertracing</groupId>

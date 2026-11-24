@@ -27,7 +27,10 @@ public abstract class AbstractIntegrationTest {
                             "/docker-entrypoint-initdb.d/01-eventuate-schema.sql")
                     .withCopyFileToContainer(
                             MountableFile.forHostPath("../deploy/postgres-init/04-tram-saga-schema.sql"),
-                            "/docker-entrypoint-initdb.d/04-tram-saga-schema.sql");
+                            "/docker-entrypoint-initdb.d/04-tram-saga-schema.sql")
+                    .withCopyFileToContainer(
+                            MountableFile.forHostPath("../deploy/postgres-init/05-parked-message.sql"),
+                            "/docker-entrypoint-initdb.d/05-parked-message.sql");
 
     @SuppressWarnings("resource")
 	static final KafkaContainer KAFKA =

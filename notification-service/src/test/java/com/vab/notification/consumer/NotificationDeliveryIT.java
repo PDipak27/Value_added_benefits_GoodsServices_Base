@@ -1,6 +1,6 @@
 package com.vab.notification.consumer;
 
-import com.vab.events.order.OrderFulfilmentFailed;
+import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.notification.dispatch.Channel;
 import com.vab.notification.dispatch.NotificationDispatcher;
 import com.vab.notification.dispatch.NotificationRouter;
@@ -29,11 +29,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * DD-27 admin-alert path against a real Postgres (Testcontainers): an
- * {@code OrderFulfilmentFailed} domain event drives the render → route →
- * dispatch → persist chain, and the delivery is written as an EMAIL to the ops
- * desk (not the subscriber). The real templates/router/dispatcher beans run; only
- * the event envelope is stubbed.
+ * Render → route → dispatch → persist against a real Postgres (Testcontainers): a refund after a
+ * failed provisioning is written as an SMS to the subscriber. Only the event envelope is stubbed.
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
@@ -59,18 +56,17 @@ class NotificationDeliveryIT {
     }
 
     @Test
-    void provisioning_failed_persists_admin_email_alert() {
-        consumer.onOrderFulfilmentFailed(envelope("ord-it-park",
-                new OrderFulfilmentFailed(Instant.now(), 3, "FULFIL_PROVISION",
-                        "PROVISIONING_UNAVAILABLE: 503")));
+    void cancelled_refunded_persists_a_subscriber_sms() {
+        consumer.onOrderCancelledRefunded(envelope("ord-it-refund",
+                new OrderCancelledRefunded(Instant.now(), 5, "FULFIL_FAILED: PROVISIONING_TIMEOUT")));
 
-        List<DeliveryRecord> saved = deliveryRepo.findByType(NotificationType.ORDER_FULFILMENT_FAILED);
+        List<DeliveryRecord> saved = deliveryRepo.findByType(NotificationType.ORDER_CANCELLED_REFUNDED);
         assertThat(saved).hasSize(1);
         DeliveryRecord r = saved.get(0);
-        assertThat(r.getOrderId()).isEqualTo("ord-it-park");
-        assertThat(r.getChannel()).isEqualTo(Channel.EMAIL);
-        assertThat(r.getRecipient()).isEqualTo("ops-desk@vab.example");   // notify ADMIN
+        assertThat(r.getOrderId()).isEqualTo("ord-it-refund");
+        assertThat(r.getChannel()).isEqualTo(Channel.SMS);
+        assertThat(r.getRecipient()).isEqualTo("order:ord-it-refund");
         assertThat(r.getStatus()).isEqualTo(DeliveryRecord.Status.SENT);
-        assertThat(r.getBody()).contains("ACTION REQUIRED");
+        assertThat(r.getBody()).contains("refunded");
     }
 }

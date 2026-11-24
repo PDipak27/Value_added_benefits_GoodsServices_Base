@@ -2,6 +2,7 @@ package com.vab.order.command.domain;
 
 public enum OrderStatus {
     PLACED,
+    PENDING_PAYMENT,      // PAY_NOW: payment intent open, the subscriber pays at checkoutUrl (Design/15)
     RESERVING_INVENTORY,
     INVENTORY_RESERVED,
     AUTHORIZING_BILLING,
@@ -13,7 +14,6 @@ public enum OrderStatus {
     FAILED,
     CANCELLED,            // user cancel before the pivot; rolled back, nothing charged (DD-26)
     CANCELLED_REFUNDED,   // unwound after the pivot via forward-recovery: refund/reverse + release (DD-26)
-    FULFILMENT_FAILED,    // NON-terminal: OTT provisioning failed; parked for admin re-drive (DD-27)
     COMPENSATING,
     COMPENSATION_COMPLETED
 }

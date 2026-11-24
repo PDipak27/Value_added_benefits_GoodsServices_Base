@@ -34,6 +34,17 @@ class OrderCancelE2E extends E2EBase {
         awaitStatusIn(orderId, "CANCELLED", "CANCELLED_REFUNDED", "COMPLETED");
     }
 
+    /** PAY_NOW not paid yet (Design/15): the cancel closes the payment intent and the order ends CANCELLED. */
+    @Test
+    void cancel_while_waiting_for_payment_cancels() {
+        String orderId = placeUnpaidOrder(sub(), "ACC_CHARGER_30W", "PHYSICAL_GOOD");
+        awaitCheckoutUrl(orderId);
+
+        authed().when().post("/v1/orders/{id}/cancel", orderId).then().statusCode(202);
+
+        awaitStatus(orderId, "CANCELLED");
+    }
+
     @Test
     void cancel_after_terminal_is_409() {
         String orderId = placeOrder(sub(), "OTT_HOTSTAR_3M", "DIGITAL_SUBSCRIPTION", "PAY_NOW");

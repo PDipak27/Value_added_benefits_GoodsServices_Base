@@ -12,10 +12,9 @@ import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.is;
 
 /**
- * §A-1 / DD-29: ott-service is an OAuth2 resource server. Provisioning requires a
- * valid Keycloak client-credentials token carrying scope {@code ott:provision} —
- * without it, the resource server returns 401. The happy provisioning path through
- * the saga is unchanged because fulfilment now attaches the token automatically.
+ * Design/06 §8: the OTT partner API is authenticated with the API key OTT issued to VA-BAGS ({@code X-Api-Key}).
+ * No key, a wrong key, or a Keycloak client-credentials token (the old credential) is a 401. The provisioning path
+ * through the saga is unaffected because fulfilment sends the key.
  */
 class OttAuthE2E extends E2EBase {
 
@@ -28,18 +27,33 @@ class OttAuthE2E extends E2EBase {
     }
 
     @Test
-    void unauthenticated_provision_is_401() {
+    void no_api_key_is_401() {
         given().baseUri(OTT).contentType(JSON).body(provisionBody("ord-" + UUID.randomUUID()))
                 .when().post("/ott/v1/entitlements")
                 .then().statusCode(401);
     }
 
     @Test
-    void authenticated_provision_succeeds() {
-        String token = clientCredentialsToken();
-        given().baseUri(OTT).header("Authorization", "Bearer " + token)
+    void wrong_api_key_is_401() {
+        given().baseUri(OTT).header("X-Api-Key", "not-the-key").contentType(JSON)
+                .body(provisionBody("ord-" + UUID.randomUUID()))
+                .when().post("/ott/v1/entitlements")
+                .then().statusCode(401);
+    }
+
+    @Test
+    void a_keycloak_bearer_token_is_no_longer_accepted() {
+        given().baseUri(OTT).header("Authorization", "Bearer " + clientCredentialsToken()).contentType(JSON)
+                .body(provisionBody("ord-" + UUID.randomUUID()))
+                .when().post("/ott/v1/entitlements")
+                .then().statusCode(401);
+    }
+
+    @Test
+    void the_partner_api_key_is_accepted() {
+        given().baseUri(OTT).header("X-Api-Key", OTT_API_KEY)
                 .contentType(JSON).body(provisionBody("ord-auth-" + UUID.randomUUID()))
                 .when().post("/ott/v1/entitlements")
-                .then().statusCode(anyOf(is(201), is(200))).log().all();   // 201 new / 200 idempotent
+                .then().statusCode(anyOf(is(202), is(200)));   // 202 new / 200 idempotent
     }
 }

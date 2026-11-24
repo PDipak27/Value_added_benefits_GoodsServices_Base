@@ -2,9 +2,11 @@ package com.vab.order.saga;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 import java.time.Instant;
 
@@ -16,20 +18,25 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.vab.events.billing.AccountLimitExceeded;
 import com.vab.events.billing.AppendToLedgerCommand;
-import com.vab.events.billing.AuthorizeBillingCommand;
-import com.vab.events.billing.BillingAuthorized;
+import com.vab.events.billing.AwaitPaymentCommand;
 import com.vab.events.billing.BillingCaptureFailed;
 import com.vab.events.billing.BillingCaptured;
-import com.vab.events.billing.BillingDeclined;
 import com.vab.events.billing.CaptureBillingCommand;
 import com.vab.events.billing.CheckAccountLimitCommand;
+import com.vab.events.billing.CreatePaymentIntentCommand;
 import com.vab.events.billing.LedgerAppended;
+import com.vab.events.billing.PaymentAuthorized;
+import com.vab.events.billing.PaymentIntentCreated;
+import com.vab.events.billing.PaymentIntentFailed;
+import com.vab.events.billing.PaymentNotCompleted;
 import com.vab.events.billing.RefundBillingCommand;
 import com.vab.events.billing.ReverseLedgerCommand;
+import com.vab.events.billing.VoidPaymentCommand;
 import com.vab.events.fulfilment.FulfilOrderCommand;
 import com.vab.events.fulfilment.OrderFulfilled;
 import com.vab.events.fulfilment.OrderFulfilmentFailed;
-import com.vab.events.fulfilment.OrderProvisioningFailed;
+import com.vab.events.fulfilment.OrderProvisioningCancelled;
+import com.vab.events.fulfilment.ReleaseEntitlementCommand;
 import com.vab.events.inventory.AllocateInventoryCommand;
 import com.vab.events.inventory.CommitInventoryCommand;
 import com.vab.events.inventory.InventoryAllocated;
@@ -42,7 +49,7 @@ import com.vab.events.inventory.ReserveInventoryCommand;
 import com.vab.order.command.service.OrderCommandService;
 
 /**
- * Unit tests for {@link PlaceOrderSaga}'s orchestration logic (DD-26 / DD-27),
+ * Unit tests for {@link PlaceOrderSaga}'s orchestration logic (DD-26, Design/13 §6),
  * exercised without Eventuate: each step method is invoked directly with a
  * hand-built {@link PlaceOrderSagaData} and a mocked {@link OrderCommandService}.
  *
@@ -53,8 +60,8 @@ import com.vab.order.command.service.OrderCommandService;
  *   <li>the saga-data → participant-command field mapping,</li>
  *   <li>reply handlers persisting ids onto the saga data,</li>
  *   <li>the FAILED "{reason}: {detail}" reason composition per failed step,</li>
- *   <li>the two cancel checkpoints (pre-pivot rollback vs pre-fulfil forward-recover),</li>
- *   <li>and finalize's three-way COMPLETED / CANCELLED_REFUNDED / FULFILMENT_FAILED routing.</li>
+ *   <li>the cancel checkpoints (pre-pivot rollback, pre-fulfil and post-fulfil forward-recover),</li>
+ *   <li>and finalize's COMPLETED / CANCELLED_REFUNDED routing.</li>
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -150,13 +157,32 @@ class PlaceOrderSagaTest {
         }
 
         @Test
-        void authorize_maps_order_subscriber_amount_currency_mode() {
+        void createPaymentIntent_maps_order_subscriber_amount_currency() {
             saga = sagaUnderTest();
-            AuthorizeBillingCommand cmd = saga.authorizeBilling(payNow());
+            CreatePaymentIntentCommand cmd = saga.createPaymentIntent(payNow());
             assertThat(cmd.getOrderId()).isEqualTo("ord-1");
             assertThat(cmd.getSubscriberId()).isEqualTo("sub-1");
             assertThat(cmd.getAmount()).isEqualTo(500);
-            assertThat(cmd.getBillingMode()).isEqualTo("PAY_NOW");
+            assertThat(cmd.getCurrency()).isEqualTo("INR");
+        }
+
+        @Test
+        void awaitPayment_names_the_intent_from_the_create_reply() {
+            saga = sagaUnderTest();
+            PlaceOrderSagaData d = payNow();
+            d.setPaymentIntentId("pi_1");
+            AwaitPaymentCommand cmd = saga.awaitPayment(d);
+            assertThat(cmd.getOrderId()).isEqualTo("ord-1");
+            assertThat(cmd.getIntentId()).isEqualTo("pi_1");
+        }
+
+        @Test
+        void voidPayment_compensation_releases_the_authorisation() {
+            saga = sagaUnderTest();
+            PlaceOrderSagaData d = payNow();
+            d.setAuthId("pi_1");
+            VoidPaymentCommand cmd = saga.voidPayment(d);
+            assertThat(cmd.getAuthId()).isEqualTo("pi_1");
         }
 
         @Test
@@ -169,7 +195,7 @@ class PlaceOrderSagaTest {
         }
 
         @Test
-        void capture_uses_the_authId_from_the_authorize_reply() {
+        void capture_uses_the_authId_from_the_payment_reply() {
             saga = sagaUnderTest();
             PlaceOrderSagaData d = payNow();
             d.setAuthId("auth-7");
@@ -244,11 +270,21 @@ class PlaceOrderSagaTest {
         }
 
         @Test
-        void billingAuthorized_captures_authId() {
+        void paymentIntentCreated_records_the_intent_and_shows_the_checkout_link() {
             saga = sagaUnderTest();
             PlaceOrderSagaData d = payNow();
-            saga.handleBillingAuthorized(d, new BillingAuthorized("auth-7"));
-            assertThat(d.getAuthId()).isEqualTo("auth-7");
+            Instant expires = Instant.parse("2026-11-16T10:08:00Z");
+            saga.handlePaymentIntentCreated(d, new PaymentIntentCreated("pi_1", "http://psp/checkout/pi_1?cs=x", expires));
+            assertThat(d.getPaymentIntentId()).isEqualTo("pi_1");
+            verify(orderCommandService).awaitPayment("ord-1", "http://psp/checkout/pi_1?cs=x", expires);
+        }
+
+        @Test
+        void paymentAuthorized_captures_authId() {
+            saga = sagaUnderTest();
+            PlaceOrderSagaData d = payNow();
+            saga.handlePaymentAuthorized(d, new PaymentAuthorized("pi_1"));
+            assertThat(d.getAuthId()).isEqualTo("pi_1");
         }
 
         @Test
@@ -301,10 +337,39 @@ class PlaceOrderSagaTest {
         }
 
         @Test
-        void billingDeclined_fails_order_at_AUTHORIZE_BILLING() {
+        void provider_unavailable_fails_order_at_CREATE_PAYMENT_INTENT() {
             saga = sagaUnderTest();
-            saga.handleBillingDeclined(payNow(), new BillingDeclined("DECLINED", "insufficient"));
-            verify(orderCommandService).failOrder("ord-1", "AUTHORIZE_BILLING", "DECLINED: insufficient");
+            saga.handlePaymentIntentFailed(payNow(), new PaymentIntentFailed("PSP_UNAVAILABLE", "HTTP 503"));
+            verify(orderCommandService).failOrder("ord-1", "CREATE_PAYMENT_INTENT", "PSP_UNAVAILABLE: HTTP 503");
+        }
+
+        @Test
+        void cancel_before_the_intent_existed_ends_CANCELLED_not_FAILED() {
+            saga = sagaUnderTest();
+            saga.handlePaymentIntentFailed(payNow(), new PaymentIntentFailed("CANCELLED", "before payment"));
+            verify(orderCommandService).cancel("ord-1", "USER_CANCEL: before payment");
+            verify(orderCommandService, never()).failOrder(anyString(), anyString(), anyString());
+        }
+
+        @Test
+        void declined_payment_fails_order_at_AWAIT_PAYMENT() {
+            saga = sagaUnderTest();
+            saga.handlePaymentNotCompleted(payNow(), new PaymentNotCompleted("DECLINED", "customer_declined"));
+            verify(orderCommandService).failOrder("ord-1", "AWAIT_PAYMENT", "DECLINED: customer_declined");
+        }
+
+        @Test
+        void expired_payment_window_fails_order_at_AWAIT_PAYMENT() {
+            saga = sagaUnderTest();
+            saga.handlePaymentNotCompleted(payNow(), new PaymentNotCompleted("EXPIRED", "window closed"));
+            verify(orderCommandService).failOrder("ord-1", "AWAIT_PAYMENT", "EXPIRED: window closed");
+        }
+
+        @Test
+        void user_cancel_while_paying_ends_CANCELLED() {
+            saga = sagaUnderTest();
+            saga.handlePaymentNotCompleted(payNow(), new PaymentNotCompleted("CANCELLED", "USER_CANCEL"));
+            verify(orderCommandService).cancel("ord-1", "USER_CANCEL: before payment");
         }
 
         @Test
@@ -434,20 +499,49 @@ class PlaceOrderSagaTest {
 
             assertThat(d.isForwardRecover()).isTrue();
             assertThat(d.getCancelReason()).isEqualTo("FULFIL_FAILED: DAMAGED: carrier refused");
-            assertThat(d.isProvisioningFailed()).isFalse();
+            assertThat(d.isEntitlementRevokeRequired()).isFalse();
         }
 
         @Test
-        void provisioning_failure_parks_without_forward_recovery() {
+        void provisioning_cancelled_by_user_forward_recovers() {
             saga = sagaUnderTest();
-            PlaceOrderSagaData d = payNow();
+            PlaceOrderSagaData d = billToMobile();
 
-            saga.handleOrderProvisioningFailed(d,
-                    new OrderProvisioningFailed("ord-1", "PROVISIONING_UNAVAILABLE", "503"));
+            saga.handleProvisioningCancelled(d, new OrderProvisioningCancelled("ord-2", "USER_CANCEL: during provisioning"));
 
-            assertThat(d.isProvisioningFailed()).isTrue();
-            assertThat(d.getProvisioningFailureReason()).isEqualTo("PROVISIONING_UNAVAILABLE: 503");
-            assertThat(d.isForwardRecover()).isFalse();   // DD-27: the charge stands, no refund
+            assertThat(d.isForwardRecover()).isTrue();
+            assertThat(d.getCancelReason()).isEqualTo("USER_CANCEL: during provisioning");
+            assertThat(saga.shouldReverseLedger(d)).isTrue();
+            assertThat(saga.shouldReleaseEntitlement(d)).isFalse();   // nothing was provisioned
+        }
+
+        @Test
+        void cancel_after_digital_fulfilment_revokes_then_refunds() {
+            saga = sagaUnderTest();
+            PlaceOrderSagaData d = billToMobile();
+            when(orderCommandService.isCancelRequested("ord-2")).thenReturn(true);
+
+            saga.handleOrderFulfilled(d, new OrderFulfilled("ord-2", "DIGITAL_SUBSCRIPTION",
+                    "ent_1", null, null, "OTT-2", Instant.now(), null));
+
+            assertThat(d.isForwardRecover()).isTrue();
+            assertThat(saga.shouldReleaseEntitlement(d)).isTrue();
+            ReleaseEntitlementCommand cmd = saga.releaseEntitlement(d);
+            assertThat(cmd.getOrderId()).isEqualTo("ord-2");
+            assertThat(cmd.getExternalRef()).isEqualTo("OTT-2");
+        }
+
+        @Test
+        void digital_fulfilment_without_cancel_completes_normally() {
+            saga = sagaUnderTest();
+            PlaceOrderSagaData d = billToMobile();
+            when(orderCommandService.isCancelRequested("ord-2")).thenReturn(false);
+
+            saga.handleOrderFulfilled(d, new OrderFulfilled("ord-2", "DIGITAL_SUBSCRIPTION",
+                    "ent_1", null, null, "OTT-2", Instant.now(), null));
+
+            assertThat(d.isForwardRecover()).isFalse();
+            assertThat(saga.shouldReleaseEntitlement(d)).isFalse();
         }
     }
 
@@ -490,24 +584,6 @@ class PlaceOrderSagaTest {
                     org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         }
 
-        @Test
-        void provisioning_failure_parks_and_takes_precedence_over_recovery() {
-            saga = sagaUnderTest();
-            PlaceOrderSagaData d = payNow();
-            d.setProvisioningFailed(true);
-            d.setProvisioningFailureReason("OTT_TIMEOUT");
-            d.setForwardRecover(true);   // park branch must win
-
-            saga.finalizeOrder(d);
-
-            verify(orderCommandService).fulfilmentFailed("ord-1", "OTT_TIMEOUT");
-            verifyNoInteractions_onTerminalSuccess();
-        }
-
-        private void verifyNoInteractions_onTerminalSuccess() {
-            verify(orderCommandService, never()).cancelRefunded(org.mockito.ArgumentMatchers.anyString(),
-                    org.mockito.ArgumentMatchers.anyString());
-        }
     }
 
     @Test

@@ -66,6 +66,9 @@ sequenceDiagram
 
 ## Entitlement provisioning flow (Order Saga → OTT)
 
+> **Superseded by §8 below** (API key + async activation + webhooks). Kept for history: this was the
+> original OAuth2 client-credentials design.
+
 ```mermaid
 sequenceDiagram
     participant SM as Order Saga
@@ -121,3 +124,34 @@ ott-service is a backend with no video UI, so it plays the RP as a **server-side
 - **Two filter chains** — the §A-1 provisioning API (`/ott/v1/entitlements/**`) stays a **Bearer resource server** (`@Order(1)`); the subscriber surface is the **login client** (`@Order(2)`). One service, both OAuth2 roles.
 
 The provisioning flow (Order Saga → OTT) is unchanged — it remains the client-credentials path from §A-1/A-4 (the live route is `POST /ott/v1/entitlements`, not `/admin/entitlements`).
+
+---
+
+## 8. Partner API with API key and webhooks (current design, 2026-11)
+
+Real OTT platforms don't federate with each partner's identity provider: they issue the partner an **API key**,
+expose an entitlement API, and report state changes with **signed webhooks**. VA-BAGS now works the same way.
+The subscriber's OIDC login to the OTT video surface (above) is unchanged. The Keycloak client
+`vab-provisioning` stays in the realm but nothing uses it.
+
+```
+fulfilment ──POST /ott/v1/entitlements (X-Api-Key)──▶ ott-service
+           ◀── 202 {externalRef, status: PENDING} ────
+                                                     activator, ~2 s later: PENDING → ACTIVE (or REJECTED)
+                                                     outbox row + webhook in the same transaction
+fulfilment ◀── POST /webhooks/ott  Ott-Signature: t=…,v1=hex(HMAC-SHA256(secret, t + "." + body)) ── retried
+           saga gets OrderFulfilled (activated) or OrderFulfilmentFailed(PROVISIONING_REJECTED) (rejected)
+```
+
+| Concern | How |
+|---|---|
+| **Authn, partner → OTT** | `X-Api-Key` (constant-time compare; one partner key, from `vabags-secrets` → `VAB_OTT_API_KEY`). Wrong or missing: 401 before any controller. |
+| **Authn, OTT → partner** | HMAC-signed webhook (`VAB_OTT_WEBHOOK_SECRET`); fulfilment verifies the raw body, ±5 min replay window, dedupes on the event id (`fulfilment.ott_webhook_event`). Several `v1` values allowed for secret rotation. |
+| **Provisioning** | `POST` → **202 PENDING**. Idempotent on `orderId`: a repeat returns the current state (`ACTIVE` with validity, `REJECTED` with reason). 422 (OTTBAD) and 503 (OTTDOWN) stay synchronous. |
+| **Activation** | `EntitlementActivator` (every 1 s) activates PENDING rows older than `ott.activation-delay` (2 s). Demo trigger: an offer code containing `OTTREJECT` is rejected here → `entitlement.rejected`. |
+| **Delivery** | `ott.webhook_events` outbox → `WebhookDelivery` (every 1 s, `FOR UPDATE SKIP LOCKED`), doubling backoff capped at 1 min, FAILED after 20 attempts. |
+| **Fulfilment waiting** | New provisioning-task state **AWAITING_ACTIVATION** holds the saga's reply token (Design/13 §6). The deadline (2 h) and a user cancel apply as before: refund, and the entitlement is revoked by order. |
+| **Late activation** | An activation for an order that already timed out / was cancelled is revoked (`REVOKE_OWED`). |
+| **Uncertain POST** | A timed-out POST stays RETRYING; if OTT did accept it, its activation webhook still completes the order, and a retried POST returns the existing entitlement. |
+| **Revoke** | `DELETE /ott/v1/entitlements/{ref}` and `/by-order/{orderId}`, API key, synchronous 204 (unchanged semantics). |
+

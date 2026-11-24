@@ -2,6 +2,7 @@ package com.vab.order.query.api;
 
 import com.vab.order.command.domain.Order;
 import com.vab.order.command.domain.OrderRepository;
+import com.vab.order.command.domain.OrderStatus;
 import com.vab.order.query.document.OrderView;
 import com.vab.order.query.repository.OrderViewRepository;
 import org.slf4j.Logger;
@@ -106,6 +107,9 @@ public class OrderQueryController {
         view.setConfirmedAt(order.getConfirmedAt());
         view.setCompletedAt(order.getCompletedAt());
         view.setVersion(order.getVersion());
+        if (order.getStatus() == OrderStatus.PENDING_PAYMENT) {
+            view.setPayment(new OrderView.Payment(order.getCheckoutUrl(), order.getPaymentExpiresAt()));
+        }
         if (order.getCompletedAt() != null) {
             view.setFulfilment(new OrderView.Fulfilment(order.getProductType(),
                     order.getTrackingRef(), order.getActivationKey(), order.getExternalRef()));

@@ -1,5 +1,8 @@
 package com.vab.order.command.service;
 
+import com.vab.events.billing.CancelPaymentCommand;
+import com.vab.events.fulfilment.CancelProvisioningCommand;
+import com.vab.events.order.OrderAwaitingPayment;
 import com.vab.events.order.OrderCancelled;
 import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
@@ -34,6 +37,8 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -51,7 +56,7 @@ class OrderCommandServiceTest {
     @Mock PlaceOrderSaga placeOrderSaga;
     @Mock IdempotencyKeyRepository idempotencyRepo;
     @Mock CatalogClient catalogClient;
-    @Mock com.vab.order.command.fulfilment.FulfilmentReDrive fulfilmentReDrive;
+    @Mock io.eventuate.tram.commands.producer.CommandProducer commandProducer;
     @Mock com.vab.order.query.repository.EntitlementViewRepository entitlementRepo;
     @Mock com.vab.order.command.fulfilment.EntitlementRevoke entitlementRevoke;
 
@@ -60,7 +65,7 @@ class OrderCommandServiceTest {
     @BeforeEach
     void setUp() {
         service = new OrderCommandService(orderRepo, publisher, sagaInstanceFactory,
-                placeOrderSaga, idempotencyRepo, catalogClient, fulfilmentReDrive, entitlementRepo,
+                placeOrderSaga, idempotencyRepo, catalogClient, commandProducer, entitlementRepo,
                 entitlementRevoke);
     }
 
@@ -282,13 +287,66 @@ class OrderCommandServiceTest {
 
         @Test
         void requestCancel_flags_a_non_terminal_order() {
-            Order order = placed();
-            when(orderRepo.findById("ord-1")).thenReturn(Optional.of(order));
+            Order order = Order.place("ord-1", "sub-1", "OFF-1", "PHYSICAL_GOOD", "px-1", 500, "INR", "BILL_TO_MOBILE");
+            when(orderRepo.findByIdForUpdate("ord-1")).thenReturn(Optional.of(order));
 
             service.requestCancel("ord-1");
 
             assertThat(order.isCancelRequested()).isTrue();
             verify(orderRepo).saveAndFlush(order);
+            verifyNoInteractions(commandProducer);
+        }
+
+        @Test
+        void requestCancel_on_an_unpaid_pay_now_order_tells_billing() {
+            Order order = placed();
+            order.awaitPayment("http://psp/checkout/pi_1?cs=x", Instant.now().plusSeconds(480));
+            when(orderRepo.findByIdForUpdate("ord-1")).thenReturn(Optional.of(order));
+
+            service.requestCancel("ord-1");
+
+            ArgumentCaptor<CancelPaymentCommand> cmd = ArgumentCaptor.forClass(CancelPaymentCommand.class);
+            verify(commandProducer).send(eq(PlaceOrderSaga.BILLING_CHANNEL), cmd.capture(), anyString(), anyMap());
+            assertThat(cmd.getValue().getOrderId()).isEqualTo("ord-1");
+        }
+
+        @Test
+        void requestCancel_after_payment_leaves_billing_alone() {
+            Order order = placed();
+            order.confirm(Instant.now());
+            when(orderRepo.findByIdForUpdate("ord-1")).thenReturn(Optional.of(order));
+
+            service.requestCancel("ord-1");
+
+            verifyNoInteractions(commandProducer);   // the saga's cancel checkpoint handles a paid order
+        }
+
+        @Test
+        void awaitPayment_moves_to_pending_payment_and_publishes_the_link() {
+            Order order = placed();
+            Instant expires = Instant.parse("2026-11-16T10:08:00Z");
+            when(orderRepo.findById("ord-1")).thenReturn(Optional.of(order));
+
+            service.awaitPayment("ord-1", "http://psp/checkout/pi_1?cs=x", expires);
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+            assertThat(order.getCheckoutUrl()).isEqualTo("http://psp/checkout/pi_1?cs=x");
+            OrderAwaitingPayment event = (OrderAwaitingPayment) publishedEvents().get(0);
+            assertThat(event.getCheckoutUrl()).isEqualTo("http://psp/checkout/pi_1?cs=x");
+            assertThat(event.getExpiresAt()).isEqualTo(expires);
+        }
+
+        @Test
+        void requestCancel_on_a_confirmed_digital_order_tells_fulfilment() {
+            Order order = Order.place("ord-1", "sub-1", "OFF-1", "DIGITAL_SUBSCRIPTION", "px-1", 500, "INR", "BILL_TO_MOBILE");
+            order.confirm(Instant.now());
+            when(orderRepo.findByIdForUpdate("ord-1")).thenReturn(Optional.of(order));
+
+            service.requestCancel("ord-1");
+
+            ArgumentCaptor<CancelProvisioningCommand> cmd = ArgumentCaptor.forClass(CancelProvisioningCommand.class);
+            verify(commandProducer).send(eq(PlaceOrderSaga.FULFILMENT_CHANNEL), cmd.capture(), anyString(), anyMap());
+            assertThat(cmd.getValue().getOrderId()).isEqualTo("ord-1");
         }
 
         @Test
@@ -378,133 +436,6 @@ class OrderCommandServiceTest {
             service.applyEntitlementRevoked("ord-1");
 
             verify(orderRepo, never()).saveAndFlush(any());
-            verifyNoInteractions(publisher);
-        }
-    }
-
-    /** DD-27 admin back-office: park, re-drive (and its async replies), manual complete. */
-    @Nested
-    class ReDrive {
-
-        private Order parked() {
-            Order o = Order.place("ord-p", "sub-1", "OTT_NETFLIX_6M", "DIGITAL_SUBSCRIPTION", "px-1", 599, "INR", "PAY_NOW");
-            o.fulfilmentFailed("PROVISIONING_UNAVAILABLE: HTTP 503");
-            return o;
-        }
-
-        private Order completed() {
-            Order o = Order.place("ord-p", "sub-1", "OTT_NETFLIX_6M", "DIGITAL_SUBSCRIPTION", "px-1", 599, "INR", "PAY_NOW");
-            o.complete(Instant.now(), null, null, "OTT-1");
-            return o;
-        }
-
-        /** The saga's provisioning-failure branch parks the order (FULFILMENT_FAILED, FULFIL_PROVISION) and publishes OrderFulfilmentFailed for the admin alert. */
-        @Test
-        void fulfilmentFailed_parks_and_publishes_alert_event() {
-            Order order = Order.place("ord-p", "sub-1", "OTT_NETFLIX_6M", "DIGITAL_SUBSCRIPTION", "px-1", 599, "INR", "PAY_NOW");
-            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
-
-            service.fulfilmentFailed("ord-p", "PROVISIONING_REJECTED: HTTP 422");
-
-            assertThat(order.getStatus()).isEqualTo(OrderStatus.FULFILMENT_FAILED);
-            assertThat(order.getFailedStep()).isEqualTo("FULFIL_PROVISION");
-            assertThat(publishedEvents().get(0)).isInstanceOf(com.vab.events.order.OrderFulfilmentFailed.class);
-        }
-
-        /** Retry on a parked order re-sends the fulfil command; the order stays parked until the reply lands. */
-        @Test
-        void retry_on_parked_order_sends_redrive_command() {
-            Order order = parked();
-            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
-
-            service.retryFulfilment("ord-p");
-
-            verify(fulfilmentReDrive).reDrive(order);
-            assertThat(order.getStatus()).isEqualTo(OrderStatus.FULFILMENT_FAILED);
-            verifyNoInteractions(publisher);
-        }
-
-        /** Retry on an order that isn't parked is refused (→ 409) and nothing is re-driven. */
-        @Test
-        void retry_on_non_parked_order_is_refused() {
-            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(completed()));
-
-            assertThatThrownBy(() -> service.retryFulfilment("ord-p")).isInstanceOf(IllegalStateException.class);
-            verifyNoInteractions(fulfilmentReDrive);
-        }
-
-        /** Manual override completes a parked order with the out-of-band externalRef and publishes OrderCompleted. */
-        @Test
-        void manual_complete_on_parked_order_completes_with_external_ref() {
-            Order order = parked();
-            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
-
-            service.completeFulfilment("ord-p", "OTT-MANUAL");
-
-            assertThat(order.getStatus()).isEqualTo(OrderStatus.COMPLETED);
-            assertThat(order.getExternalRef()).isEqualTo("OTT-MANUAL");
-            OrderCompleted event = (OrderCompleted) publishedEvents().get(0);
-            assertThat(event.getExternalRef()).isEqualTo("OTT-MANUAL");
-        }
-
-        /** Manual override on an order that isn't parked is refused (→ 409) and nothing is saved or published. */
-        @Test
-        void manual_complete_on_non_parked_order_is_refused() {
-            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(completed()));
-
-            assertThatThrownBy(() -> service.completeFulfilment("ord-p", "OTT-X")).isInstanceOf(IllegalStateException.class);
-            verify(orderRepo, never()).saveAndFlush(any());
-            verifyNoInteractions(publisher);
-        }
-
-        /** A successful re-drive reply completes the parked order with the OTT ref and validity window. */
-        @Test
-        void redrive_success_reply_completes_parked_order() {
-            Order order = parked();
-            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
-            Instant from = Instant.parse("2026-10-01T00:00:00Z"), until = Instant.parse("2027-04-01T00:00:00Z");
-
-            service.completeFromReDrive("ord-p", "OTT-RD", from, until);
-
-            assertThat(order.getStatus()).isEqualTo(OrderStatus.COMPLETED);
-            OrderCompleted event = (OrderCompleted) publishedEvents().get(0);
-            assertThat(event.getExternalRef()).isEqualTo("OTT-RD");
-            assertThat(event.getValidUntil()).isEqualTo(until);
-        }
-
-        /** A duplicate success reply for an order already completed is a no-op (idempotent redelivery). */
-        @Test
-        void redrive_success_reply_for_completed_order_is_ignored() {
-            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(completed()));
-
-            service.completeFromReDrive("ord-p", "OTT-RD", Instant.now(), null);
-
-            verify(orderRepo, never()).saveAndFlush(any());
-            verifyNoInteractions(publisher);
-        }
-
-        /** A failed re-drive reply keeps the order parked, records the new reason and re-alerts. */
-        @Test
-        void redrive_failure_reply_re_parks_and_re_alerts() {
-            Order order = parked();
-            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
-
-            service.parkFromReDrive("ord-p", "PROVISIONING_UNAVAILABLE: still down");
-
-            assertThat(order.getStatus()).isEqualTo(OrderStatus.FULFILMENT_FAILED);
-            assertThat(order.getFailureReason()).isEqualTo("PROVISIONING_UNAVAILABLE: still down");
-            assertThat(publishedEvents().get(0)).isInstanceOf(com.vab.events.order.OrderFulfilmentFailed.class);
-        }
-
-        /** A late failure reply for an order that was meanwhile completed manually must not re-park it. */
-        @Test
-        void redrive_failure_reply_for_completed_order_is_ignored() {
-            Order order = completed();
-            when(orderRepo.findById("ord-p")).thenReturn(Optional.of(order));
-
-            service.parkFromReDrive("ord-p", "late failure");
-
-            assertThat(order.getStatus()).isEqualTo(OrderStatus.COMPLETED);
             verifyNoInteractions(publisher);
         }
     }

@@ -2,15 +2,13 @@ package com.vab.billing.command;
 
 import com.vab.billing.domain.BillingAccount;
 import com.vab.billing.domain.BillingAccountRepository;
-import com.vab.billing.domain.BillingLedgerEntry;
-import com.vab.billing.domain.BillingLedgerEntry.Status;
-import com.vab.billing.domain.BillingLedgerEntry.Type;
-import com.vab.billing.domain.BillingLedgerRepository;
 import com.vab.billing.domain.NextCycleLedgerEntry;
 import com.vab.billing.domain.NextCycleLedgerRepository;
+import com.vab.billing.payment.PaymentService;
 import com.vab.events.billing.*;
 import io.eventuate.tram.commands.consumer.CommandHandlers;
 import io.eventuate.tram.commands.consumer.CommandMessage;
+import io.eventuate.tram.commands.consumer.CommandReplyToken;
 import io.eventuate.tram.messaging.common.Message;
 import io.eventuate.tram.sagas.participant.SagaCommandHandlersBuilder;
 import org.slf4j.Logger;
@@ -24,31 +22,28 @@ import static io.eventuate.tram.commands.consumer.CommandHandlerReplyBuilder.wit
 import static io.eventuate.tram.commands.consumer.CommandHandlerReplyBuilder.withSuccess;
 
 /**
- * Saga participant on the "billingService" channel. Two flows: PAY_NOW
- * (authorize → capture[pivot]; refund is forward-recovery; auth amount &gt; 999
- * declines, capture amount == 777 hard-declines the pivot) and BILL_TO_MOBILE
- * (checkAccountLimit → appendToLedger[pivot]; reverseLedger is forward-recovery).
- * Idempotency via Tram {@code received_messages}; reversal also via entry status.
+ * Saga participant on the "billingService" channel. Two flows:
+ * <ul>
+ *   <li>PAY_NOW, through the external payment provider (Design/15): createPaymentIntent → awaitPayment
+ *       (deferred reply: answered when the provider's webhook arrives) → capture[pivot]; void is the
+ *       compensation, refund the forward recovery. All of it lives in {@link PaymentService}.</li>
+ *   <li>BILL_TO_MOBILE: checkAccountLimit → appendToLedger[pivot]; reverseLedger is forward-recovery.</li>
+ * </ul>
+ * Idempotency via Tram {@code received_messages}, plus the payment intent's and ledger entry's own state.
  */
 @Component
 public class BillingCommandHandlers {
 
     private static final Logger log = LoggerFactory.getLogger(BillingCommandHandlers.class);
 
-    /** Hardcoded PAY_NOW authorize demo threshold (see Design/02 & DD report). */
-    private static final long DECLINE_THRESHOLD = 999;
-
-    /** Demo trigger (DD-26): capture amount == 777 hard-declines (e.g. bank refused settlement). */
-    private static final long CAPTURE_DECLINE_AMOUNT = 777;
-
-    private final BillingLedgerRepository    ledger;
+    private final PaymentService             payments;
     private final BillingAccountRepository   accounts;
     private final NextCycleLedgerRepository  nextCycle;
 
-    public BillingCommandHandlers(BillingLedgerRepository ledger,
+    public BillingCommandHandlers(PaymentService payments,
                                   BillingAccountRepository accounts,
                                   NextCycleLedgerRepository nextCycle) {
-        this.ledger    = ledger;
+        this.payments  = payments;
         this.accounts  = accounts;
         this.nextCycle = nextCycle;
     }
@@ -56,83 +51,47 @@ public class BillingCommandHandlers {
     public CommandHandlers commandHandlerDefinitions() {
         return SagaCommandHandlersBuilder
                 .fromChannel("billingService")
-                .onMessage(AuthorizeBillingCommand.class,  this::authorize)
-                .onMessage(CaptureBillingCommand.class,    this::capture)
-                .onMessage(RefundBillingCommand.class,     this::refund)
+                // Deferred-reply overload (only on the first registration in Tram 0.26): the reply is sent now,
+                // or later when the provider's webhook arrives.
+                .onMessage(AwaitPaymentCommand.class,
+                        (CommandMessage<AwaitPaymentCommand> cm, CommandReplyToken token) -> awaitPayment(cm, token))
+                .onMessage(CreatePaymentIntentCommand.class, this::createPaymentIntent)
+                // Plain command from order-service; no reply.
+                .onMessage(CancelPaymentCommand.class,
+                        (CommandMessage<CancelPaymentCommand> cm) -> cancelPayment(cm))
+                .onMessage(VoidPaymentCommand.class,         this::voidPayment)
+                .onMessage(CaptureBillingCommand.class,      this::capture)
+                .onMessage(RefundBillingCommand.class,       this::refund)
                 .onMessage(CheckAccountLimitCommand.class, this::checkAccountLimit)
                 .onMessage(AppendToLedgerCommand.class,    this::appendToLedger)
                 .onMessage(ReverseLedgerCommand.class,     this::reverseLedger)
                 .build();
     }
 
-    // ── Authorize (step 2) ──────────────────────────────────────────────────
+    // ── PAY_NOW (Design/15): the state machine lives in PaymentService ──────────
 
-    @Transactional
-    public Message authorize(CommandMessage<AuthorizeBillingCommand> cm) {
-        AuthorizeBillingCommand cmd = cm.getCommand();
-
-        if (cmd.getAmount() > DECLINE_THRESHOLD) {
-            ledger.save(new BillingLedgerEntry(
-                    "led_" + UUID.randomUUID(), cmd.getOrderId(), null,
-                    Type.AUTHORIZE, Status.DECLINED, cmd.getAmount(), cmd.getCurrency()));
-            log.warn("Billing DECLINED: orderId={}, amount={} {} exceeds limit {}",
-                    cmd.getOrderId(), cmd.getAmount(), cmd.getCurrency(), DECLINE_THRESHOLD);
-            return withFailure(new BillingDeclined(
-                    "AMOUNT_EXCEEDS_LIMIT",
-                    "Amount " + cmd.getAmount() + " " + cmd.getCurrency()
-                            + " exceeds demo authorization limit of " + DECLINE_THRESHOLD));
-        }
-
-        String authId = "auth_" + UUID.randomUUID();
-        ledger.save(new BillingLedgerEntry(
-                "led_" + UUID.randomUUID(), cmd.getOrderId(), authId,
-                Type.AUTHORIZE, Status.AUTHORIZED, cmd.getAmount(), cmd.getCurrency()));
-        log.info("Billing AUTHORIZED: orderId={}, authId={}, amount={} {}",
-                cmd.getOrderId(), authId, cmd.getAmount(), cmd.getCurrency());
-        return withSuccess(new BillingAuthorized(authId));
+    public Message createPaymentIntent(CommandMessage<CreatePaymentIntentCommand> cm) {
+        return payments.createIntent(cm.getCommand());
     }
 
-    // ── Capture (the PAY_NOW pivot; DD-26) ───────────────────────────────────
+    public void awaitPayment(CommandMessage<AwaitPaymentCommand> cm, CommandReplyToken token) {
+        payments.awaitPayment(cm.getCommand(), token);
+    }
 
-    @Transactional
+    public void cancelPayment(CommandMessage<CancelPaymentCommand> cm) {
+        payments.cancelPayment(cm.getCommand().getOrderId(), cm.getCommand().getReason());
+    }
+
+    public Message voidPayment(CommandMessage<VoidPaymentCommand> cm) {
+        return payments.voidPayment(cm.getCommand().getAuthId(), cm.getCommand().getReason());
+    }
+
     public Message capture(CommandMessage<CaptureBillingCommand> cm) {
-        CaptureBillingCommand cmd = cm.getCommand();
-
-        // Hard decline: the pivot failed to commit. Reply withFailure — nothing was
-        // captured, so the saga rolls back the prior holds and ends the order FAILED
-        // (no refund needed). Capture is the go/no-go point, not a post-pivot step.
-        if (cmd.getAmount() == CAPTURE_DECLINE_AMOUNT) {
-            ledger.save(new BillingLedgerEntry(
-                    "led_" + UUID.randomUUID(), null, cmd.getAuthId(),
-                    Type.CAPTURE, Status.DECLINED, cmd.getAmount(), cmd.getCurrency()));
-            log.warn("Billing CAPTURE DECLINED: authId={}, amount={} {}",
-                    cmd.getAuthId(), cmd.getAmount(), cmd.getCurrency());
-            return withFailure(new BillingCaptureFailed(
-                    "CAPTURE_DECLINED",
-                    "Settlement refused for amount " + cmd.getAmount() + " " + cmd.getCurrency()));
-        }
-
-        String captureId = "cap_" + UUID.randomUUID();
-        ledger.save(new BillingLedgerEntry(
-                "led_" + UUID.randomUUID(), null, cmd.getAuthId(),
-                Type.CAPTURE, Status.CAPTURED, cmd.getAmount(), cmd.getCurrency()));
-        log.info("Billing CAPTURED: authId={}, captureId={}, amount={} {}",
-                cmd.getAuthId(), captureId, cmd.getAmount(), cmd.getCurrency());
-        return withSuccess(new BillingCaptured(captureId));
+        return payments.capture(cm.getCommand());
     }
 
-    // ── Refund (forward-recovery for a settled capture; DD-26) ───────────────
-
-    @Transactional
     public Message refund(CommandMessage<RefundBillingCommand> cm) {
-        RefundBillingCommand cmd = cm.getCommand();
-        String refundId = "ref_" + UUID.randomUUID();
-        ledger.save(new BillingLedgerEntry(
-                "led_" + UUID.randomUUID(), null, cmd.getAuthId(),
-                Type.REFUND, Status.REFUNDED, cmd.getAmount(), cmd.getCurrency()));
-        log.info("Billing REFUNDED: authId={}, refundId={}, amount={} {}, reason={}",
-                cmd.getAuthId(), refundId, cmd.getAmount(), cmd.getCurrency(), cmd.getReason());
-        return withSuccess(new BillingRefunded(refundId));
+        return payments.refund(cm.getCommand());
     }
 
     // ── Check account limit (BILL_TO_MOBILE gate) ────────────────────────────

@@ -55,7 +55,7 @@ public class EntitlementRevoke {
 
     // Subscribe on context-ready, not @PostConstruct: OrderCommandService depends on this
     // bean, so an earlier subscription could process a reply before that bean exists and
-    // hit BeanCurrentlyInCreationException on the @Lazy proxy (see FulfilmentReDrive).
+    // hit BeanCurrentlyInCreationException on the @Lazy proxy (an earlier @PostConstruct subscription did).
     @EventListener(ApplicationReadyEvent.class)
     void subscribe() {
         messageConsumer.subscribe(SUBSCRIBER_ID, Set.of(REPLY_CHANNEL), this::onReply);

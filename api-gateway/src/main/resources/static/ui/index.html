@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#4338ca">
+  <title>VA-BAGS</title>
+  <link rel="stylesheet" href="app.css?v=2026-11-20e">
+</head>
+<body>
+<div class="stage">
+
+  <!-- ── the phone ─────────────────────────────────────────────────────── -->
+  <div class="phone" id="phone">
+    <div class="statusbar" aria-hidden="true">
+      <span id="clock">9:41</span>
+      <span class="notch"></span>
+      <span class="sb-icons">
+        <svg viewBox="0 0 18 12" width="18" height="12"><path d="M1 11h2V8H1zm4 0h2V6H5zm4 0h2V3H9zm4 0h2V0h-2z" fill="currentColor"/></svg>
+        <svg viewBox="0 0 24 12" width="24" height="12"><rect x="1" y="1" width="19" height="10" rx="2.5" fill="none" stroke="currentColor"/><rect x="3" y="3" width="13" height="6" rx="1" fill="currentColor"/><rect x="21" y="4" width="2" height="4" rx="1" fill="currentColor"/></svg>
+      </span>
+    </div>
+
+    <header class="appbar">
+      <button class="icon-btn" id="backBtn" hidden aria-label="Back">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="appbar-title">
+        <div class="brand" id="brand"><span class="logo">V</span>VA-BAGS</div>
+        <h1 id="screenTitle" hidden></h1>
+      </div>
+      <button class="avatar" id="avatarBtn" aria-label="Profile">?</button>
+    </header>
+
+    <main class="screen" id="screen"></main>
+
+    <nav class="tabbar" id="tabbar">
+      <a href="#/store" data-tab="store">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16l-1.4 11.2a2 2 0 0 1-2 1.8H7.4a2 2 0 0 1-2-1.8z M9 7V6a3 3 0 0 1 6 0v1"/></svg>
+        <span>Store</span>
+      </a>
+      <a href="#/orders" data-tab="orders">
+        <svg viewBox="0 0 24 24"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z M9 8h6 M9 12h6"/></svg>
+        <span>Orders</span><i class="dot" id="ordersDot" hidden></i>
+      </a>
+      <a href="#/benefits" data-tab="benefits">
+        <svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.4l-5.2 2.7 1-5.8-4.3-4.1 5.9-.8z"/></svg>
+        <span>Benefits</span>
+      </a>
+      <a href="#/profile" data-tab="profile">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
+        <span>Profile</span>
+      </a>
+    </nav>
+
+    <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+    <section class="sheet" id="sheet" hidden aria-modal="true" role="dialog">
+      <div class="grabber"></div>
+      <button class="sheet-close" id="sheetClose" aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+      </button>
+      <div id="sheetBody"></div>
+    </section>
+
+    <div class="toast" id="toast" hidden></div>
+  </div>
+
+  <!-- ── under the hood (desktop only) ─────────────────────────────────── -->
+  <aside class="inspector" id="inspector">
+    <div class="inspector-head">
+      <div>
+        <h2>Under the hood</h2>
+        <p>Every call the app makes through the API gateway, and every order state change the saga produces.</p>
+      </div>
+      <button class="text-btn" id="clearLog">Clear</button>
+    </div>
+    <ol class="feed" id="feed"></ol>
+  </aside>
+</div>
+<script src="app.js?v=2026-11-20e"></script>
+</body>
+</html>

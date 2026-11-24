@@ -17,8 +17,8 @@ import org.springframework.security.web.SecurityFilterChain;
  * <ul>
  *   <li>Actuator: health (status only, for probes) and info are public; health details,
  *       metrics and anything else need {@code vab-admin}.</li>
- *   <li>Back-office actions — order re-drive / manual complete / entitlement revoke,
- *       and the {@code /v1/ops/**} search — require the {@code vab-admin} realm role.</li>
+ *   <li>Back-office actions — entitlement revoke, the {@code /v1/ops/**} search and the
+ *       DLQ admin ({@code /v1/ops/messages/parked}) — require the {@code vab-admin} realm role.</li>
  *   <li>All other {@code /v1/**} endpoints require a valid token; the subscriber-facing
  *       ones read the subject from the {@code subscriberId} claim.</li>
  * </ul>
@@ -36,8 +36,6 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                         .requestMatchers("/actuator/**").hasRole("vab-admin")
                         .requestMatchers(HttpMethod.POST,
-                                "/v1/orders/*/retry-fulfilment",
-                                "/v1/orders/*/complete-fulfilment",
                                 "/v1/orders/*/revoke-entitlement").hasRole("vab-admin")
                         .requestMatchers("/v1/ops/**").hasRole("vab-admin")
                         .anyRequest().authenticated())

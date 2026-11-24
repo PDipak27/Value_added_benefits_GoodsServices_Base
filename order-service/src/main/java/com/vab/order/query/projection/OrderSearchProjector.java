@@ -5,7 +5,6 @@ import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
 import com.vab.events.order.OrderConfirmed;
 import com.vab.events.order.OrderFailed;
-import com.vab.events.order.OrderFulfilmentFailed;
 import com.vab.events.order.OrderPlaced;
 import com.vab.order.command.domain.Order;
 import com.vab.order.query.document.OrderSearchView;
@@ -51,8 +50,6 @@ public class OrderSearchProjector {
                         de -> applyStatus(de.getAggregateId(), "CANCELLED_REFUNDED", de.getEvent().getVersion()))
                 .onEvent(OrderFailed.class,
                         de -> applyStatus(de.getAggregateId(), "FAILED", de.getEvent().getVersion()))
-                .onEvent(OrderFulfilmentFailed.class,
-                        de -> applyStatus(de.getAggregateId(), "FULFILMENT_FAILED", de.getEvent().getVersion()))
                 .build();
     }
 

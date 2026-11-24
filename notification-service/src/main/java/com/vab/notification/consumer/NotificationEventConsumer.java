@@ -5,7 +5,6 @@ import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
 import com.vab.events.order.OrderConfirmed;
 import com.vab.events.order.OrderFailed;
-import com.vab.events.order.OrderFulfilmentFailed;
 import com.vab.notification.dispatch.Channel;
 import com.vab.notification.dispatch.NotificationDispatcher;
 import com.vab.notification.dispatch.NotificationRouter;
@@ -71,7 +70,6 @@ public class NotificationEventConsumer {
                 .onEvent(OrderCancelled.class, this::onOrderCancelled)
                 .onEvent(OrderCancelledRefunded.class, this::onOrderCancelledRefunded)
                 .onEvent(OrderFailed.class, this::onOrderFailed)
-                .onEvent(OrderFulfilmentFailed.class, this::onOrderFulfilmentFailed)
                 .build();
     }
 
@@ -130,16 +128,6 @@ public class NotificationEventConsumer {
         log.info("Received OrderFailed: orderId={}, failedStep={}", orderId, event.getFailedStep());
         notify(NotificationType.ORDER_FAILED, orderId,
                 Map.of("orderId", orderId, "reason", String.valueOf(event.getTerminalReason())));
-    }
-
-    @Transactional
-    public void onOrderFulfilmentFailed(DomainEventEnvelope<OrderFulfilmentFailed> de) {
-        String orderId = de.getAggregateId();
-        OrderFulfilmentFailed event = de.getEvent();
-        log.info("Received OrderFulfilmentFailed: orderId={}, failedStep={}", orderId, event.getFailedStep());
-        // DD-27: backoffice/admin alert — OTT provisioning failing, order parked for re-drive.
-        notify(NotificationType.ORDER_FULFILMENT_FAILED, orderId,
-                Map.of("orderId", orderId, "reason", String.valueOf(event.getReason())));
     }
 
     // ── Render → route → dispatch → record ──────────────────────────────────

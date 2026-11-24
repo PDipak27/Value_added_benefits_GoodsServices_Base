@@ -3,10 +3,10 @@ package com.vab.order.query.projection;
 import com.vab.events.order.OrderCancelled;
 import com.vab.events.order.OrderCancelledRefunded;
 import com.vab.events.order.OrderCompleted;
+import com.vab.events.order.OrderAwaitingPayment;
 import com.vab.events.order.OrderConfirmed;
 import com.vab.events.order.OrderEntitlementRevoked;
 import com.vab.events.order.OrderFailed;
-import com.vab.events.order.OrderFulfilmentFailed;
 import com.vab.events.order.OrderPlaced;
 import com.vab.order.command.domain.Order;
 import com.vab.order.query.document.EntitlementView;
@@ -58,12 +58,12 @@ public class OrderProjector {
         return DomainEventHandlersBuilder
                 .forAggregateType(Order.AGGREGATE_TYPE)
                 .onEvent(OrderPlaced.class, this::onPlaced)
+                .onEvent(OrderAwaitingPayment.class, this::onAwaitingPayment)
                 .onEvent(OrderConfirmed.class, this::onConfirmed)
                 .onEvent(OrderCompleted.class, this::onCompleted)
                 .onEvent(OrderCancelled.class, this::onCancelled)
                 .onEvent(OrderCancelledRefunded.class, this::onCancelledRefunded)
                 .onEvent(OrderFailed.class, this::onFailed)
-                .onEvent(OrderFulfilmentFailed.class, this::onFulfilmentFailed)
                 .onEvent(OrderEntitlementRevoked.class, this::onEntitlementRevoked)
                 .build();
     }
@@ -100,6 +100,27 @@ public class OrderProjector {
         log.info("Saved OrderView (PLACED): orderId={}", orderId);
     }
 
+    /** PAY_NOW (Design/15): show the checkout link until the payment resolves. */
+    void onAwaitingPayment(DomainEventEnvelope<OrderAwaitingPayment> de) {
+        OrderAwaitingPayment event = de.getEvent();
+        String orderId = de.getAggregateId();
+        long   version = event.getVersion();
+
+        repo.findById(orderId).ifPresentOrElse(view -> {
+            if (version <= view.getVersion()) {
+                log.info("Skipping stale OrderAwaitingPayment: orderId={}, incoming={}, current={}",
+                        orderId, version, view.getVersion());
+                return;
+            }
+            view.setStatus("PENDING_PAYMENT");
+            view.setPayment(new OrderView.Payment(event.getCheckoutUrl(), event.getExpiresAt()));
+            view.setVersion(version);
+            view.addTimelineEntry(Instant.now(), "PENDING_PAYMENT");
+            repo.save(view);
+            log.info("Saved OrderView (PENDING_PAYMENT): orderId={}", orderId);
+        }, () -> log.warn("OrderAwaitingPayment for unknown orderId={} (no PLACED view yet)", orderId));
+    }
+
     void onConfirmed(DomainEventEnvelope<OrderConfirmed> de) {
         OrderConfirmed event   = de.getEvent();
         String         orderId = de.getAggregateId();
@@ -114,6 +135,7 @@ public class OrderProjector {
                 return;
             }
             view.setStatus("CONFIRMED");
+            view.setPayment(null);
             view.setConfirmedAt(event.getConfirmedAt());
             view.setProductType(event.getProductType());
             view.setVersion(version);
@@ -225,6 +247,7 @@ public class OrderProjector {
                 return;
             }
             view.setStatus("CANCELLED");
+            view.setPayment(null);
             view.setVersion(version);
             view.addTimelineEntry(event.getCancelledAt(), "CANCELLED");
             repo.save(view);
@@ -267,6 +290,7 @@ public class OrderProjector {
                 return;
             }
             view.setStatus("FAILED");
+            view.setPayment(null);
             view.setVersion(version);
             view.addTimelineEntry(Instant.now(), "FAILED");
             repo.save(view);
@@ -274,25 +298,4 @@ public class OrderProjector {
         }, () -> log.warn("OrderFailed for unknown orderId={} (no PLACED view yet)", orderId));
     }
 
-    void onFulfilmentFailed(DomainEventEnvelope<OrderFulfilmentFailed> de) {
-        OrderFulfilmentFailed event   = de.getEvent();
-        String                orderId = de.getAggregateId();
-        long                  version = event.getVersion();
-
-        log.info("Projecting OrderFulfilmentFailed: orderId={}, version={}", orderId, version);
-
-        repo.findById(orderId).ifPresentOrElse(view -> {
-            if (version <= view.getVersion()) {
-                log.info("Skipping stale OrderFulfilmentFailed: orderId={}, incoming={}, current={}",
-                        orderId, version, view.getVersion());
-                return;
-            }
-            // Non-terminal park (DD-27): a later OrderCompleted supersedes this.
-            view.setStatus("FULFILMENT_FAILED");
-            view.setVersion(version);
-            view.addTimelineEntry(event.getFailedAt(), "FULFILMENT_FAILED");
-            repo.save(view);
-            log.info("Saved OrderView (FULFILMENT_FAILED): orderId={}", orderId);
-        }, () -> log.warn("OrderFulfilmentFailed for unknown orderId={} (no view yet)", orderId));
-    }
 }

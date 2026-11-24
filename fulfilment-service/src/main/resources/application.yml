@@ -5,12 +5,23 @@ server:
 spring:
   application:
     name: fulfilment-service
+  # Design/13 §8.1: every outbound HTTP call is bounded (applies to the auto-configured RestClient.Builder).
+  http:
+    client:
+      connect-timeout: 2s
+      read-timeout: 5s
 
   datasource:
     url: jdbc:postgresql://localhost:5432/vab
     username: eventuate
     password: eventuate
     driver-class-name: org.postgresql.Driver
+    # Design/13 §8.1: bounded waits. A blocked pool fails in 3 s; a statement or lock wait can't hang a
+    # consumer forever (55P03 / 57014 are retried by shared-messaging's decorator).
+    hikari:
+      connection-timeout: 3000
+      data-source-properties:
+        options: "-c statement_timeout=10000 -c lock_timeout=3000"
 
   jpa:
     hibernate:
@@ -25,25 +36,59 @@ spring:
     locations: #flyway auto adds locations.
     - classpath:db/migration
 
-# ── External OTT provider (DD-27): provisioning + bounded in-call retries ───
+# ── External OTT provider: one attempt per call; retries live in the provisioning task (Design/13 §6) ──
+# Design/06 §8: OTT's partner API. The API key OTT issued us, and the secret its webhooks are signed with.
 ott:
   base-url: http://localhost:8087
-  max-attempts: 3
-  retry-delay-ms: 200
+  api-key: ${VAB_OTT_API_KEY:ott_test_key_vab}
+  webhook-secret: ${VAB_OTT_WEBHOOK_SECRET:whsec_ott_test}
+  signature-tolerance: 5m
 
-# ── Keycloak client-credentials for the secured ott-service (§A-1 / DD-29) ──
-# §4: Keycloak defaults to plain HTTP dev mode. For the §E2 edge-TLS setup, set
-# KEYCLOAK_TOKEN_URI=https://... (fulfilment then trusts the mkcert CA via `mkcert -install`).
-keycloak:
-  token-uri: ${KEYCLOAK_TOKEN_URI:http://localhost:8088/realms/vab/protocol/openid-connect/token}
-  client-id: vab-provisioning
-  client-secret: vab-provisioning-secret
-  scope: ott:provision
+# ── Design/13 §6: deferred-reply provisioning while OTT is unavailable ──────
+vab:
+  fulfilment:
+    provisioning:
+      deadline: 2h                          # then OrderFulfilmentFailed(PROVISIONING_TIMEOUT) → refund
+      backoff: 30s,1m,2m,5m,10m             # last value repeats until the deadline
+      poll-interval: 5s
+      batch-size: 10
+      lease: 60s                            # IN_PROGRESS ownership; also the wait before a revoke-by-order
+      revoke-retry: 1m
+      tombstone-ttl: 2h
+
+# ── Circuit breakers (Design/13 §8.1). 4xx means the service is up, so it doesn't count. ──
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 4s
+        slow-call-rate-threshold: 80
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 1
+        automatic-transition-from-open-to-half-open-enabled: true
+        ignore-exceptions:
+          - org.springframework.web.client.HttpClientErrorException
+    instances:
+      ott:
+        base-config: default
 
 eventuatelocal:
   kafka:
     bootstrap:
       servers: localhost:9094
+
+# Design/13 §8.3: pause a partition instead of buffering an unbounded backlog while a handler waits.
+eventuate:
+  local:
+    kafka:
+      consumer:
+        back-pressure:
+          low: 100
+          high: 500
 
 management:
   # §perf: no span export unless `obs` is active — old sampled traceparents on Kafka/HTTP hops
@@ -56,6 +101,14 @@ management:
     web:
       exposure:
         include: health,info
+  # Design/13 §9: a dead Eventuate subscription fails liveness (k8s restarts the pod; the message is redelivered).
+  endpoint:
+    health:
+      probes:
+        enabled: true          # livenessState / readinessState exist outside k8s too
+      group:
+        liveness:
+          include: livenessState,eventuateSubscriptions
 
 logging:
   level:

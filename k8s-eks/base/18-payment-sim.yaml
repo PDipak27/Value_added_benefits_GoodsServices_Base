@@ -1,0 +1,54 @@
+# Payment provider simulator (Design/15) — plays the external provider: merchant API for billing (API key
+# from vabags-secrets), hosted checkout page for browsers (payment-public NLB), signed webhooks to billing.
+# In-memory state: one replica, and a restart forgets open intents (billing expires them).
+# Image is the bare name `vabags/payment-sim`; deploy.sh rewrites it to <ECR>/vabags/payment-sim:<git-sha>.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-sim
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: payment-sim }
+  template:
+    metadata:
+      labels: { app: payment-sim }
+      annotations:
+        vab/public-config-hash: PUBLIC_CONFIG_HASH   # deploy.sh → restart when public URLs change
+    spec:
+      containers:
+        - name: payment-sim
+          image: vabags/payment-sim
+          ports:
+            - containerPort: 8091
+          envFrom:
+            - configMapRef: { name: vabags-endpoints }
+            - configMapRef: { name: vabags-public }      # PAYMENT_SIM_PUBLIC_URL (checkout links)
+            - secretRef: { name: vabags-secrets }        # VAB_PSP_KEY_SECRET, VAB_PSP_WEBHOOK_SECRET
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8091 }
+            periodSeconds: 10
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8091 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8091 }
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "50m", memory: "192Mi" }
+            limits: { memory: "384Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-sim
+spec:
+  selector: { app: payment-sim }
+  ports:
+    - port: 8091
+      targetPort: 8091

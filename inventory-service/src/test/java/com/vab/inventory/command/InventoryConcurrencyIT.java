@@ -34,7 +34,9 @@ import static org.mockito.Mockito.when;
  * (and on the FREE license key) must let exactly "capacity" of them win; the rest fail cleanly with
  * OUT_OF_STOCK / POOL_EXHAUSTED, and no activation key is ever handed out twice.
  */
-@SpringBootTest
+// 20 contenders share a 10-connection pool behind one row lock; the 3 s fail-fast connection timeout from
+// application.yml would fail the waiters (the decorator retries those in production, these calls bypass it).
+@SpringBootTest(properties = "spring.datasource.hikari.connection-timeout=30000")
 class InventoryConcurrencyIT extends AbstractIntegrationTest {
 
     private static final int CONTENDERS = 20;

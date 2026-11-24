@@ -11,6 +11,12 @@ spring:
     username: eventuate
     password: eventuate
     driver-class-name: org.postgresql.Driver
+    # Design/13 §8.1: bounded waits. A blocked pool fails in 3 s; a statement or lock wait can't hang a
+    # consumer forever (55P03 / 57014 are retried by shared-messaging's decorator).
+    hikari:
+      connection-timeout: 3000
+      data-source-properties:
+        options: "-c statement_timeout=10000 -c lock_timeout=3000"
 
   jpa:
     hibernate:
@@ -31,6 +37,15 @@ eventuatelocal:
     bootstrap:
       servers: localhost:9094
 
+# Design/13 §8.3: pause a partition instead of buffering an unbounded backlog while a handler waits.
+eventuate:
+  local:
+    kafka:
+      consumer:
+        back-pressure:
+          low: 100
+          high: 500
+
 management:
   # §perf: the reservation sweeper is the only self-rooted span here — keep it unsampled so it never
   # tries to export to Tempo when obs is off. Saga spans still trace under `obs` (they inherit the root).
@@ -47,6 +62,14 @@ management:
     web:
       exposure:
         include: health,info
+  # Design/13 §9: a dead Eventuate subscription fails liveness (k8s restarts the pod; the message is redelivered).
+  endpoint:
+    health:
+      probes:
+        enabled: true          # livenessState / readinessState exist outside k8s too
+      group:
+        liveness:
+          include: livenessState,eventuateSubscriptions
 
 logging:
   level:

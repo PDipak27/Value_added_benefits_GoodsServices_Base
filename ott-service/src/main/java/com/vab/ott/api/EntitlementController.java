@@ -51,20 +51,21 @@ public class EntitlementController {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Offer not provisionable: " + req.offerCode());
         }
 
-        // Idempotent on orderId — a retried request returns the same entitlement.
+        // Idempotent on orderId: a retried request returns the entitlement in its current state.
         var existing = repo.findByOrderId(req.orderId());
         if (existing.isPresent()) {
             Entitlement e = existing.get();
-            log.info("OTT provision idempotent hit: orderId={}, externalRef={}", req.orderId(), e.getExternalRef());
-            return ResponseEntity.ok(new EntitlementResponse(e.getExternalRef(), e.getStatus().name()));
+            log.info("OTT provision idempotent hit: orderId={}, externalRef={}, status={}",
+                    req.orderId(), e.getExternalRef(), e.getStatus());
+            return ResponseEntity.ok(EntitlementResponse.of(e));
         }
 
+        // Accepted, not done: the activator finishes it shortly and the partner hears via webhook (Design/06 §8).
         String externalRef = "OTT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
         Entitlement e = repo.save(new Entitlement(externalRef, req.orderId(), req.subscriberId(),
                 req.offerCode(), req.validFrom(), req.validUntil()));
-        log.info("OTT provisioned: orderId={}, externalRef={}", req.orderId(), externalRef);
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(new EntitlementResponse(e.getExternalRef(), e.getStatus().name()));
+        log.info("OTT provisioning accepted (PENDING): orderId={}, externalRef={}", req.orderId(), externalRef);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(EntitlementResponse.of(e));
     }
 
     /**
@@ -80,8 +81,48 @@ public class EntitlementController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * DELETE /ott/v1/entitlements/by-order/{orderId} — revoke whatever entitlement exists for an order
+     * (Design/13 §6: the order is being refunded, possibly after a timed-out provision whose
+     * externalRef the caller never received). Idempotent: 204 even when there is none.
+     */
+    @DeleteMapping("/by-order/{orderId}")
+    @Transactional
+    public ResponseEntity<Void> revokeByOrder(@PathVariable String orderId) {
+        repo.findByOrderId(orderId).ifPresentOrElse(
+                e -> { e.revoke(); log.info("OTT entitlement revoked by order: orderId={}, externalRef={}", orderId, e.getExternalRef()); },
+                () -> log.info("OTT revoke-by-order no-op (no entitlement for orderId={})", orderId));
+        return ResponseEntity.noContent().build();
+    }
+
     public record ProvisionRequest(String orderId, String subscriberId, String offerCode,
                                    Instant validFrom, Instant validUntil) {}
 
-    public record EntitlementResponse(String externalRef, String status) {}
+    public record EntitlementResponse(String externalRef, String status, Instant validFrom, Instant validUntil,
+                                      String reason) {
+        static EntitlementResponse of(Entitlement e) {
+            return new EntitlementResponse(e.getExternalRef(), e.getStatus().name(), e.getValidFrom(), e.getValidUntil(),
+                    e.getRejectionReason());
+        }
+    }
+    public static void main(String [] aa) {
+    	byte[] a = "12345".getBytes(); byte[] b = "1234".getBytes();
+    	
+        // Track length mismatch without returning early
+        int diff = a.length ^ b.length;
+
+        // Iterate over the longest array to avoid leaking length via timing
+        int maxLength = Math.max(a.length, b.length);
+        for (int i = 0; i < maxLength; i++) {
+            byte byteA = (i < a.length) ? a[i] : 0;
+            byte byteB = (i < b.length) ? b[i] : 0;
+            System.out.println( "byteA: "+byteA  + " byteB: "+byteB+ " diff: "+diff + " byteA ^ byteB: "+(byteA ^ byteB)  );
+            diff |= byteA ^ byteB;
+            System.out.println( "byteA: "+byteA  + " byteB: "+byteB+ " diff: "+diff + " byteA ^ byteB: "+(byteA ^ byteB)  );
+        }
+
+        System.out.println(diff == 0 );
+    }
+
+    
 }

@@ -12,7 +12,12 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpServer;
 import com.vab.ott.domain.Entitlement;
+import com.vab.ott.domain.EntitlementActivator;
 import com.vab.ott.domain.EntitlementRepository;
+import com.vab.ott.webhook.WebhookDelivery;
+import com.vab.ott.webhook.WebhookEvent;
+import com.vab.ott.webhook.WebhookEventRepository;
+import com.vab.ott.webhook.WebhookOutbox;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,7 +38,9 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Date;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -48,25 +55,32 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * ott-service security on real infra (§A-1/A-2, DD-27/29). The provisioning API is exercised with REAL
- * RS256 tokens verified by the app's own {@code JwtDecoder} against a stub JWKS endpoint, so signature,
- * issuer, expiry, the {@code ott-service} audience and the {@code ott:provision} scope are all checked
- * for real. The video surface uses {@code oidcLogin()} to test the entitlement gate on {@code /stream}.
+ * ott-service on real infra (Design/06 §8, §A-2). The partner API is authenticated with the API key, accepts
+ * provisioning as PENDING, and the activator + webhook outbox finish it: the test drives both (their schedules
+ * are slowed to an hour) and a local HTTP stub plays the partner's webhook endpoint. The video surface uses
+ * {@code oidcLogin()} to test the entitlement gate on {@code /stream}.
  *
- * <p>Runs with the {@code eks} profile: its split-horizon config uses explicit Keycloak endpoints
- * (pointed at the stub) instead of boot-time OIDC discovery — no Keycloak needed.
+ * <p>Runs with the {@code eks} profile: its split-horizon config uses explicit Keycloak endpoints (pointed at the
+ * stub) instead of boot-time OIDC discovery — no Keycloak needed.
  */
-@SpringBootTest(properties = "KEYCLOAK_ISSUER=" + OttSecurityIT.ISSUER)
+@SpringBootTest(properties = {
+        "KEYCLOAK_ISSUER=" + OttSecurityIT.ISSUER,
+        "ott.api-key=" + OttSecurityIT.API_KEY,
+        "ott.webhook-secret=whsec_it",
+        "ott.activation-delay=0s",
+        "ott.activation-poll-interval=1h",
+        "ott.webhook-poll-interval=1h"})
 @AutoConfigureMockMvc
 @ActiveProfiles("eks")
 class OttSecurityIT {
 
     static final String ISSUER = "http://issuer.test/realms/vab";
+    static final String API_KEY = "ott_it_key";
     private static final String API = "/ott/v1/entitlements";
 
     static final RSAKey SIGNING_KEY = rsaKey("k1");
-    static final RSAKey FOREIGN_KEY = rsaKey("k1");   // same kid, different key → bad signature
-    static final HttpServer keycloakStub = startJwksStub();
+    static final List<String[]> received = new CopyOnWriteArrayList<>();   // {signature, body} the partner got
+    static final HttpServer stub = startStub();
 
     @SuppressWarnings("resource")
     static final PostgreSQLContainer<?> POSTGRES =
@@ -79,9 +93,10 @@ class OttSecurityIT {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry r) {
-        String stub = "http://localhost:" + keycloakStub.getAddress().getPort();
-        r.add("KEYCLOAK_PUBLIC_URL", () -> stub);
-        r.add("KEYCLOAK_INTERNAL_URL", () -> stub);
+        String base = "http://localhost:" + stub.getAddress().getPort();
+        r.add("KEYCLOAK_PUBLIC_URL", () -> base);
+        r.add("KEYCLOAK_INTERNAL_URL", () -> base);
+        r.add("ott.webhook-url", () -> base + "/webhooks/ott");
         r.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         r.add("spring.datasource.username", POSTGRES::getUsername);
         r.add("spring.datasource.password", POSTGRES::getPassword);
@@ -89,144 +104,146 @@ class OttSecurityIT {
 
     @AfterAll
     static void stopStub() {
-        keycloakStub.stop(0);
+        stub.stop(0);
     }
 
     @Autowired MockMvc mvc;
     @Autowired EntitlementRepository entitlements;
+    @Autowired WebhookEventRepository webhookEvents;
+    @Autowired EntitlementActivator activator;
+    @Autowired WebhookDelivery delivery;
 
-    // ── token minting ───────────────────────────────────────────────────────
-
-    /** A provisioning token as Keycloak would mint it for vab-provisioning; each parameter can be broken by a test. */
-    private static String token(String audience, String scope, String issuer, Instant expiresAt, RSAKey signer) {
-        JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
-                .issuer(issuer)
-                .subject("service-account-vab-provisioning")
-                .claim("scope", scope)
-                .issueTime(new Date())
-                .expirationTime(Date.from(expiresAt));
-        if (audience != null) claims.audience(audience);
-        try {
-            SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(signer.getKeyID()).build(), claims.build());
-            jwt.sign(new RSASSASigner(signer));
-            return jwt.serialize();
-        } catch (JOSEException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    private static String validToken() {
-        return token("ott-service", "ott:provision", ISSUER, Instant.now().plusSeconds(300), SIGNING_KEY);
-    }
-
-    private ResultActions provision(String bearer, String orderId, String subscriberId, String offerCode) throws Exception {
+    private ResultActions provision(String apiKey, String orderId, String subscriberId, String offerCode) throws Exception {
         var req = post(API).contentType(MediaType.APPLICATION_JSON).content("""
                 {"orderId":"%s","subscriberId":"%s","offerCode":"%s"}""".formatted(orderId, subscriberId, offerCode));
-        if (bearer != null) req.header("Authorization", "Bearer " + bearer);
+        if (apiKey != null) req.header("X-Api-Key", apiKey);
         return mvc.perform(req);
+    }
+
+    private String accepted(String orderId, String subscriberId, String offerCode) throws Exception {
+        String json = provision(API_KEY, orderId, subscriberId, offerCode)
+                .andExpect(status().isAccepted()).andReturn().getResponse().getContentAsString();
+        return JsonPath.read(json, "$.externalRef");
     }
 
     private static String newOrderId() {
         return "ord_it_" + UUID.randomUUID().toString().substring(0, 8);
     }
 
-    // ── provisioning API: resource server (chain 1) ─────────────────────────
+    private List<WebhookEvent> eventsFor(String orderId) {
+        return webhookEvents.findAll().stream().filter(e -> e.getPayload().contains(orderId)).toList();
+    }
 
-    /** A correctly signed token with aud=ott-service and scope ott:provision provisions an ACTIVE entitlement (201). */
+    // ── partner API: API key (chain 1) ──────────────────────────────────────
+
+    /** A valid API key gets the request accepted: 202 PENDING with an externalRef, no webhook yet. */
     @Test
-    void valid_provisioning_token_creates_entitlement() throws Exception {
+    void valid_api_key_accepts_provisioning_as_pending() throws Exception {
         String orderId = newOrderId();
 
-        provision(validToken(), orderId, "sub-it", "OTT_NETFLIX_6M")
-                .andExpect(status().isCreated())
+        provision(API_KEY, orderId, "sub-it", "OTT_NETFLIX_6M")
+                .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.externalRef").value(org.hamcrest.Matchers.startsWith("OTT-")))
+                .andExpect(jsonPath("$.status").value("PENDING"));
+        assertThat(eventsFor(orderId)).isEmpty();
+    }
+
+    /** The activator turns it ACTIVE and queues a signed entitlement.activated webhook in the same transaction. */
+    @Test
+    void activation_makes_it_active_and_delivers_a_signed_webhook() throws Exception {
+        String orderId = newOrderId();
+        String ref = accepted(orderId, "sub-it", "OTT_NETFLIX_6M");
+
+        activator.activateDue();
+
+        assertThat(entitlements.findById(ref).orElseThrow().getStatus()).isEqualTo(Entitlement.Status.ACTIVE);
+        assertThat(eventsFor(orderId)).singleElement().satisfies(e -> {
+            assertThat(e.getType()).isEqualTo(WebhookOutbox.ACTIVATED);
+            assertThat(e.getStatus()).isEqualTo(WebhookEvent.Status.PENDING);
+        });
+
+        delivery.deliverDue();
+
+        assertThat(eventsFor(orderId)).singleElement().satisfies(e -> assertThat(e.getStatus()).isEqualTo(WebhookEvent.Status.DELIVERED));
+        String[] got = received.stream().filter(r -> r[1].contains(orderId)).findFirst().orElseThrow();
+        long t = Long.parseLong(got[0].split(",")[0].substring(2));
+        assertThat(got[0]).endsWith("v1=" + WebhookOutbox.sign("whsec_it", t, got[1]));
+        assertThat((String) JsonPath.read(got[1], "$.data.externalRef")).isEqualTo(ref);
+    }
+
+    /** Demo trigger OTTREJECT: accepted, then rejected by the activator with an entitlement.rejected webhook. */
+    @Test
+    void activator_can_reject_and_says_so_by_webhook() throws Exception {
+        String orderId = newOrderId();
+        String ref = accepted(orderId, "sub-it", "OTT_OTTREJECT_1M");
+
+        activator.activateDue();
+
+        assertThat(entitlements.findById(ref).orElseThrow().getStatus()).isEqualTo(Entitlement.Status.REJECTED);
+        assertThat(eventsFor(orderId)).singleElement().satisfies(e -> assertThat(e.getType()).isEqualTo(WebhookOutbox.REJECTED));
+    }
+
+    /** Idempotent on orderId: a retry returns 200 with the same ref and the current state (here ACTIVE + validity). */
+    @Test
+    void repeat_provision_returns_the_current_state() throws Exception {
+        String orderId = newOrderId();
+        String ref = accepted(orderId, "sub-it", "OTT_NETFLIX_6M");
+        activator.activateDue();
+
+        provision(API_KEY, orderId, "sub-it", "OTT_NETFLIX_6M")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.externalRef").value(ref))
                 .andExpect(jsonPath("$.status").value("ACTIVE"));
     }
 
-    /** Provisioning is idempotent on orderId: a retried call returns 200 with the same externalRef, not a duplicate. */
+    /** Missing or wrong API key → 401 before any controller; a Keycloak bearer token is no substitute. */
     @Test
-    void repeat_provision_for_same_order_is_idempotent() throws Exception {
-        String orderId = newOrderId();
-        String first = provision(validToken(), orderId, "sub-it", "OTT_NETFLIX_6M")
-                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
-
-        provision(validToken(), orderId, "sub-it", "OTT_NETFLIX_6M")
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.externalRef").value((String) JsonPath.read(first, "$.externalRef")));
-    }
-
-    /** No bearer token at all → 401 on the provisioning API (it never redirects to a login page). */
-    @Test
-    void no_token_is_401() throws Exception {
+    void missing_wrong_key_or_a_bearer_token_is_401() throws Exception {
         provision(null, newOrderId(), "sub-it", "OTT_NETFLIX_6M").andExpect(status().isUnauthorized());
+        provision("wrong-key", newOrderId(), "sub-it", "OTT_NETFLIX_6M").andExpect(status().isUnauthorized());
+        mvc.perform(post(API).contentType(MediaType.APPLICATION_JSON).header("Authorization", "Bearer " + keycloakToken())
+                        .content("{\"orderId\":\"" + newOrderId() + "\",\"subscriberId\":\"s\",\"offerCode\":\"OTT_NETFLIX_6M\"}"))
+                .andExpect(status().isUnauthorized());
     }
 
-    /** AudienceValidator: a token without the ott-service audience is rejected with 401, even though it is validly signed. */
-    @Test
-    void token_without_audience_is_401() throws Exception {
-        String noAud = token(null, "ott:provision", ISSUER, Instant.now().plusSeconds(300), SIGNING_KEY);
-        provision(noAud, newOrderId(), "sub-it", "OTT_NETFLIX_6M").andExpect(status().isUnauthorized());
-    }
-
-    /** A token minted for another resource server (aud=order-service) cannot be replayed here: 401. */
-    @Test
-    void token_for_another_audience_is_401() throws Exception {
-        String otherAud = token("order-service", "ott:provision", ISSUER, Instant.now().plusSeconds(300), SIGNING_KEY);
-        provision(otherAud, newOrderId(), "sub-it", "OTT_NETFLIX_6M").andExpect(status().isUnauthorized());
-    }
-
-    /** A valid token lacking the ott:provision scope is authenticated but forbidden: 403. */
-    @Test
-    void token_without_provision_scope_is_403() throws Exception {
-        String noScope = token("ott-service", "openid profile", ISSUER, Instant.now().plusSeconds(300), SIGNING_KEY);
-        provision(noScope, newOrderId(), "sub-it", "OTT_NETFLIX_6M").andExpect(status().isForbidden());
-    }
-
-    /** A token from a different issuer (iss mismatch) is rejected: 401. */
-    @Test
-    void token_from_wrong_issuer_is_401() throws Exception {
-        String foreignIss = token("ott-service", "ott:provision", "http://evil.test/realms/vab", Instant.now().plusSeconds(300), SIGNING_KEY);
-        provision(foreignIss, newOrderId(), "sub-it", "OTT_NETFLIX_6M").andExpect(status().isUnauthorized());
-    }
-
-    /** An expired token (beyond the 60s clock skew) is rejected: 401. */
-    @Test
-    void expired_token_is_401() throws Exception {
-        String expired = token("ott-service", "ott:provision", ISSUER, Instant.now().minusSeconds(600), SIGNING_KEY);
-        provision(expired, newOrderId(), "sub-it", "OTT_NETFLIX_6M").andExpect(status().isUnauthorized());
-    }
-
-    /** A token signed by a key not in the realm's JWKS (forged, same kid) fails signature verification: 401. */
-    @Test
-    void token_with_bad_signature_is_401() throws Exception {
-        String forged = token("ott-service", "ott:provision", ISSUER, Instant.now().plusSeconds(300), FOREIGN_KEY);
-        provision(forged, newOrderId(), "sub-it", "OTT_NETFLIX_6M").andExpect(status().isUnauthorized());
-    }
-
-    /** Demo triggers: OTTDOWN → 503 and OTTBAD → 422, with status-only bodies (no stack trace or exception name). */
+    /** Demo triggers: OTTDOWN → 503 and OTTBAD → 422, synchronous, with status-only bodies. */
     @Test
     void demo_failure_triggers_return_clean_errors() throws Exception {
-        provision(validToken(), newOrderId(), "sub-it", "OTTDOWN_1M")
+        provision(API_KEY, newOrderId(), "sub-it", "OTTDOWN_1M")
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(content().string(not(containsString("Exception"))));
-        provision(validToken(), newOrderId(), "sub-it", "OTTBAD_1M")
+        provision(API_KEY, newOrderId(), "sub-it", "OTTBAD_1M")
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(content().string(not(containsString("Exception"))));
     }
 
-    /** DELETE revokes the entitlement (204, status REVOKED); revoking an unknown ref is an idempotent 204. */
+    /** DELETE revokes (204, REVOKED) and is idempotent; a revoked PENDING entitlement is never activated. */
     @Test
-    void revoke_marks_entitlement_revoked_and_is_idempotent() throws Exception {
-        String json = provision(validToken(), newOrderId(), "sub-it", "OTT_PRIME_12M")
-                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
-        String ref = JsonPath.read(json, "$.externalRef");
+    void revoke_is_idempotent_and_stops_a_pending_activation() throws Exception {
+        String orderId = newOrderId();
+        String ref = accepted(orderId, "sub-it", "OTT_PRIME_12M");
 
-        mvc.perform(delete(API + "/" + ref).header("Authorization", "Bearer " + validToken()))
-                .andExpect(status().isNoContent());
+        mvc.perform(delete(API + "/" + ref).header("X-Api-Key", API_KEY)).andExpect(status().isNoContent());
+        mvc.perform(delete(API + "/OTT-UNKNOWN").header("X-Api-Key", API_KEY)).andExpect(status().isNoContent());
+        activator.activateDue();
+
+        assertThat(entitlements.findById(ref).orElseThrow().getStatus()).isEqualTo(Entitlement.Status.REVOKED);
+        assertThat(eventsFor(orderId)).isEmpty();
+    }
+
+    /** DELETE by-order revokes without the ref (204), idempotently, and needs the API key. */
+    @Test
+    void revoke_by_order_revokes_without_the_external_ref() throws Exception {
+        String orderId = newOrderId();
+        String ref = accepted(orderId, "sub-it", "OTT_PRIME_12M");
+        activator.activateDue();
+
+        mvc.perform(delete(API + "/by-order/" + orderId).header("X-Api-Key", API_KEY)).andExpect(status().isNoContent());
         assertThat(entitlements.findById(ref).orElseThrow().getStatus()).isEqualTo(Entitlement.Status.REVOKED);
 
-        mvc.perform(delete(API + "/OTT-UNKNOWN").header("Authorization", "Bearer " + validToken()))
-                .andExpect(status().isNoContent());
+        mvc.perform(delete(API + "/by-order/" + orderId).header("X-Api-Key", API_KEY)).andExpect(status().isNoContent());
+        mvc.perform(delete(API + "/by-order/ord-unknown").header("X-Api-Key", API_KEY)).andExpect(status().isNoContent());
+        mvc.perform(delete(API + "/by-order/" + orderId)).andExpect(status().isUnauthorized());
     }
 
     // ── video surface: OIDC login (chain 2) ─────────────────────────────────
@@ -239,11 +256,10 @@ class OttSecurityIT {
                 .andExpect(redirectedUrlPattern("**/oauth2/authorization/keycloak"));
     }
 
-    /** A machine provisioning token is not a subscriber login: the video surface still redirects to login. */
+    /** The partner API key is not a subscriber login: the video surface still redirects to login. */
     @Test
-    void provisioning_bearer_cannot_use_video_surface() throws Exception {
-        mvc.perform(get("/v1/videos").header("Authorization", "Bearer " + validToken()))
-                .andExpect(status().is3xxRedirection());
+    void partner_api_key_cannot_use_video_surface() throws Exception {
+        mvc.perform(get("/v1/videos").header("X-Api-Key", API_KEY)).andExpect(status().is3xxRedirection());
     }
 
     /** The seeded subscriber sub-alice holds Hotstar: streaming a Hotstar title is allowed (200, "Playing video"). */
@@ -263,29 +279,37 @@ class OttSecurityIT {
                 .andExpect(status().isNotFound());
     }
 
-    /** End to end inside OTT: provisioning (M2M) unlocks streaming for that subscriber, and revoking locks it again (403). */
+    /** Inside OTT: a PENDING entitlement doesn't unlock streaming, activation does, and a revoke locks it again. */
     @Test
-    void provision_unlocks_and_revoke_relocks_streaming() throws Exception {
+    void activation_unlocks_and_revoke_relocks_streaming() throws Exception {
         String subscriber = "sub-it-" + UUID.randomUUID().toString().substring(0, 6);
         var login = oidcLogin().idToken(t -> t.claim("subscriberId", subscriber));
+
+        String ref = accepted(newOrderId(), subscriber, "OTT_PRIME_12M");
         mvc.perform(get("/v1/videos/vid_prime_doc/stream").with(login)).andExpect(status().isForbidden());
 
-        String json = provision(validToken(), newOrderId(), subscriber, "OTT_PRIME_12M")
-                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        activator.activateDue();
         mvc.perform(get("/v1/videos/vid_prime_doc/stream").with(login)).andExpect(status().isOk());
 
-        mvc.perform(delete(API + "/" + JsonPath.read(json, "$.externalRef")).header("Authorization", "Bearer " + validToken()))
-                .andExpect(status().isNoContent());
+        mvc.perform(delete(API + "/" + ref).header("X-Api-Key", API_KEY)).andExpect(status().isNoContent());
         mvc.perform(get("/v1/videos/vid_prime_doc/stream").with(login)).andExpect(status().isForbidden());
     }
 
-    /** Actuator health stays open for probes. */
-    @Test
-    void actuator_health_is_public() throws Exception {
-        mvc.perform(get("/actuator/health")).andExpect(status().isOk());
-    }
+    // ── stubs ───────────────────────────────────────────────────────────────
 
-    // ── stub Keycloak (JWKS only) ───────────────────────────────────────────
+    /** A Keycloak-style client-credentials token: the old credential, no longer accepted by the partner API. */
+    private static String keycloakToken() {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder().issuer(ISSUER).subject("service-account-vab-provisioning")
+                .audience("ott-service").claim("scope", "ott:provision")
+                .issueTime(new Date()).expirationTime(Date.from(Instant.now().plusSeconds(300))).build();
+        try {
+            SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(SIGNING_KEY.getKeyID()).build(), claims);
+            jwt.sign(new RSASSASigner(SIGNING_KEY));
+            return jwt.serialize();
+        } catch (JOSEException e) {
+            throw new IllegalStateException(e);
+        }
+    }
 
     private static RSAKey rsaKey(String kid) {
         try {
@@ -295,8 +319,8 @@ class OttSecurityIT {
         }
     }
 
-    /** Serves the realm JWKS (public half of SIGNING_KEY only) at Keycloak's certs path. */
-    private static HttpServer startJwksStub() {
+    /** Plays Keycloak's JWKS endpoint (for the login client's config) and the partner's webhook endpoint. */
+    private static HttpServer startStub() {
         try {
             HttpServer server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
             byte[] jwks = new JWKSet(SIGNING_KEY.toPublicJWK()).toString().getBytes(StandardCharsets.UTF_8);
@@ -304,6 +328,12 @@ class OttSecurityIT {
                 exchange.getResponseHeaders().add("Content-Type", "application/json");
                 exchange.sendResponseHeaders(200, jwks.length);
                 exchange.getResponseBody().write(jwks);
+                exchange.close();
+            });
+            server.createContext("/webhooks/ott", exchange -> {
+                received.add(new String[]{exchange.getRequestHeaders().getFirst(WebhookDelivery.SIGNATURE_HEADER),
+                        new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)});
+                exchange.sendResponseHeaders(200, -1);
                 exchange.close();
             });
             server.start();

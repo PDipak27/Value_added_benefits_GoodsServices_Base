@@ -19,6 +19,11 @@ data:
   EVENTUATELOCAL_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
   CATALOG_BASE_URL: http://catalog-service:8085
   OTT_BASE_URL: http://ott-service:8087
+  # Design/06 §8: where OTT sends its activation webhooks.
+  OTT_WEBHOOK_URL: http://fulfilment-service:8086/webhooks/ott
+  # Design/15: billing → payment provider (merchant API), and the provider → billing webhook.
+  PSP_BASE_URL: http://payment-sim:8091
+  VAB_PSP_WEBHOOK_URL: http://billing-service:8083/webhooks/psp
 
   # ── split-horizon Keycloak (Design/12 §5) ───────────────────────────────
   # Pods talk to Keycloak in-cluster over HTTP; browsers use the public HTTPS NLB. The token

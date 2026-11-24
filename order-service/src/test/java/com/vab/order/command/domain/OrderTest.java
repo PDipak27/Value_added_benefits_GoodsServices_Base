@@ -81,22 +81,50 @@ class OrderTest {
         assertThat(o.getFailureReason()).isEqualTo("FULFIL_FAILED: DELIVERY_FAILED");
     }
 
-    /** DD-27 park: FULFILMENT_FAILED is non-terminal, records FULFIL_PROVISION + reason and stamps the attempt time. */
     @Test
-    void fulfilmentFailed_parks_non_terminal_with_attempt_stamp() {
-        Order o = placed();
-        o.fulfilmentFailed("PROVISIONING_UNAVAILABLE: HTTP 503");
-        assertThat(o.getStatus()).isEqualTo(OrderStatus.FULFILMENT_FAILED);
-        assertThat(o.getFailedStep()).isEqualTo("FULFIL_PROVISION");
-        assertThat(o.getFailureReason()).isEqualTo("PROVISIONING_UNAVAILABLE: HTTP 503");
-        assertThat(o.getLastAttemptAt()).isNotNull();
+    void only_a_confirmed_digital_order_waits_on_provisioning() {
+        Order digital = Order.place("ord-d", "sub-1", "OFF-d", "DIGITAL_SUBSCRIPTION", "px", 500, "INR", "PAY_NOW");
+        Order physical = Order.place("ord-p", "sub-1", "OFF-p", "PHYSICAL_GOOD", "px", 500, "INR", "PAY_NOW");
+        assertThat(digital.isWaitingOnProvisioning()).isFalse();   // PLACED: the saga's checkpoints handle cancel
+
+        digital.confirm(Instant.now());
+        physical.confirm(Instant.now());
+        assertThat(digital.isWaitingOnProvisioning()).isTrue();
+        assertThat(physical.isWaitingOnProvisioning()).isFalse();
+
+        digital.complete(Instant.now(), null, null, "OTT-1");
+        assertThat(digital.isWaitingOnProvisioning()).isFalse();
     }
 
-    /** A parked order can still complete (re-drive / manual override), carrying the OTT ref and validity window. */
     @Test
-    void parked_order_completes_with_external_ref_and_validity() {
+    void awaitPayment_shows_the_link_until_paid() {
         Order o = placed();
-        o.fulfilmentFailed("PROVISIONING_UNAVAILABLE");
+        Instant expires = Instant.parse("2026-11-16T10:08:00Z");
+
+        o.awaitPayment("http://psp/checkout/pi_1?cs=x", expires);
+
+        assertThat(o.getStatus()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(o.getCheckoutUrl()).isEqualTo("http://psp/checkout/pi_1?cs=x");
+        assertThat(o.getPaymentExpiresAt()).isEqualTo(expires);
+    }
+
+    @Test
+    void payment_is_pending_only_for_pay_now_before_confirmation() {
+        Order payNow = placed();
+        Order btm = Order.place("ord-b", "sub-1", "OFF-1", "PHYSICAL_GOOD", "px-1", 500, "INR", "BILL_TO_MOBILE");
+        assertThat(payNow.isPaymentPending()).isTrue();    // PLACED: the intent may not exist yet
+        assertThat(btm.isPaymentPending()).isFalse();
+
+        payNow.awaitPayment("http://psp/checkout/pi_1?cs=x", Instant.now());
+        assertThat(payNow.isPaymentPending()).isTrue();
+
+        payNow.confirm(Instant.now());
+        assertThat(payNow.isPaymentPending()).isFalse();
+    }
+
+    @Test
+    void completes_with_external_ref_and_validity() {
+        Order o = placed();
         Instant from = Instant.parse("2026-10-01T00:00:00Z"), until = Instant.parse("2027-04-01T00:00:00Z");
         o.complete(Instant.now(), null, null, "OTT-RD", from, until);
         assertThat(o.getStatus()).isEqualTo(OrderStatus.COMPLETED);

@@ -10,11 +10,11 @@ import static org.hamcrest.Matchers.*;
  * BILL_TO_MOBILE flow. Each asserts the terminal status on the query side and
  * that exactly the per-type fulfilment artifact is populated (PHYSICAL_GOOD →
  * trackingRef, SOFTWARE_LICENSE → activationKey, DIGITAL_SUBSCRIPTION →
- * externalRef). Amounts are kept ≤ 999 to clear the billing demo thresholds.
+ * externalRef). PAY_NOW orders are paid on payment-sim's checkout page by the placeOrder helper.
  */
 class OrderHappyPathE2E extends E2EBase {
 
-    /** PHYSICAL_GOOD PAY_NOW completes with a tracking ref (ACC_CHARGER_30W, 499: under the 999 authorize threshold). */
+    /** PHYSICAL_GOOD PAY_NOW completes with a tracking ref (ACC_CHARGER_30W, paid at checkout). */
     @Test
     void physical_good_pay_now_completes_with_tracking_ref() {
         String orderId = placeOrder(sub(), "ACC_CHARGER_30W", "PHYSICAL_GOOD", "PAY_NOW");

@@ -3,21 +3,26 @@ package com.vab.order.saga;
 import com.vab.events.billing.AccountLimitExceeded;
 import com.vab.events.billing.AccountLimitOk;
 import com.vab.events.billing.AppendToLedgerCommand;
-import com.vab.events.billing.AuthorizeBillingCommand;
-import com.vab.events.billing.BillingAuthorized;
+import com.vab.events.billing.AwaitPaymentCommand;
 import com.vab.events.billing.BillingCaptureFailed;
 import com.vab.events.billing.BillingCaptured;
-import com.vab.events.billing.BillingDeclined;
 import com.vab.events.billing.BillingRefunded;
 import com.vab.events.billing.CaptureBillingCommand;
 import com.vab.events.billing.CheckAccountLimitCommand;
+import com.vab.events.billing.CreatePaymentIntentCommand;
 import com.vab.events.billing.LedgerAppended;
+import com.vab.events.billing.PaymentAuthorized;
+import com.vab.events.billing.PaymentIntentCreated;
+import com.vab.events.billing.PaymentIntentFailed;
+import com.vab.events.billing.PaymentNotCompleted;
 import com.vab.events.billing.RefundBillingCommand;
 import com.vab.events.billing.ReverseLedgerCommand;
+import com.vab.events.billing.VoidPaymentCommand;
 import com.vab.events.fulfilment.FulfilOrderCommand;
 import com.vab.events.fulfilment.OrderFulfilled;
 import com.vab.events.fulfilment.OrderFulfilmentFailed;
-import com.vab.events.fulfilment.OrderProvisioningFailed;
+import com.vab.events.fulfilment.OrderProvisioningCancelled;
+import com.vab.events.fulfilment.ReleaseEntitlementCommand;
 import com.vab.events.inventory.AllocateInventoryCommand;
 import com.vab.events.inventory.CommitInventoryCommand;
 import com.vab.events.inventory.InventoryAllocated;
@@ -50,7 +55,7 @@ import org.springframework.stereotype.Component;
  * forward-recovery branch rather than a rollback.
  *
  * <p><b>Capture decline</b> is the pivot failing to commit: it replies
- * {@code withFailure}, the prior holds are released, and the order ends FAILED
+ * {@code withFailure}, the prior holds are released and the authorisation voided, and the order ends FAILED
  * (no charge → no refund).
  *
  * <p><b>Forward-recovery</b> (sets {@code forwardRecover}) fires when fulfilment
@@ -62,11 +67,25 @@ import org.springframework.stereotype.Component;
  * <p><b>User cancel</b> is cooperative (a flag on the order, set by the API). The
  * saga reads it at two checkpoints: before the pivot it cancels + rolls back
  * (CANCELLED); in the pre-fulfil window it forward-recovers (CANCELLED_REFUNDED).
- * A cancel that arrives after the pre-fulfil checkpoint loses the race and the
- * order completes normally; once COMPLETED the API refuses cancel (409).
+ * For a DIGITAL_SUBSCRIPTION a later cancel still wins (Design/13 §6): fulfilment
+ * may be holding its reply while OTT is unavailable, and answers
+ * {@code OrderProvisioningCancelled} instead; a cancel that lands after
+ * {@code OrderFulfilled} is caught in {@link #handleOrderFulfilled}, which revokes
+ * the entitlement before refunding. Other product types complete normally once
+ * past the pre-fulfil checkpoint; once COMPLETED the API refuses cancel (409).
+ *
+ * <p>Every local step declares {@code onExceptionRollback(SagaRollback.class)}: only
+ * that exception compensates; any other exception (a lost {@code @Version} race, a DB
+ * blip) propagates to the message decorator and the whole step is retried
+ * (Design/13 §5.1). Without it Eventuate would compensate on any exception.
+ *
+ * <p><b>PAY_NOW payment</b> (Design/15) goes through the external payment provider: billing opens an intent
+ * (the order shows its checkout link, PENDING_PAYMENT), then holds its reply to {@code AwaitPaymentCommand}
+ * until the subscriber has paid, declined, cancelled or let the window expire. An authorised payment is
+ * voided if the saga rolls back.
  *
  * <pre>
- *  PAY_NOW : reserve → authorize → commit → [cancel?] → CAPTURE(pivot) → confirm
+ *  PAY_NOW : reserve → createIntent → awaitPayment(comp: void) → commit → [cancel?] → CAPTURE(pivot) → confirm
  *            → [cancel?] → fulfil → (refund → release) → finalize
  *  BTM     : checkLimit → allocate → [cancel?] → APPEND_LEDGER(pivot) → confirm
  *            → [cancel?] → fulfil → (reverseLedger → release) → finalize
@@ -122,11 +141,23 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
                     .withReply(AccountLimitExceeded.class)
                     .build();
 
-    private final CommandEndpoint<AuthorizeBillingCommand> authorizeBillingEndpoint =
-            CommandEndpointBuilder.forCommand(AuthorizeBillingCommand.class)
+    private final CommandEndpoint<CreatePaymentIntentCommand> createPaymentIntentEndpoint =
+            CommandEndpointBuilder.forCommand(CreatePaymentIntentCommand.class)
                     .withChannel(BILLING_CHANNEL)
-                    .withReply(BillingAuthorized.class)
-                    .withReply(BillingDeclined.class)
+                    .withReply(PaymentIntentCreated.class)
+                    .withReply(PaymentIntentFailed.class)
+                    .build();
+
+    private final CommandEndpoint<AwaitPaymentCommand> awaitPaymentEndpoint =
+            CommandEndpointBuilder.forCommand(AwaitPaymentCommand.class)
+                    .withChannel(BILLING_CHANNEL)
+                    .withReply(PaymentAuthorized.class)
+                    .withReply(PaymentNotCompleted.class)
+                    .build();
+
+    private final CommandEndpoint<VoidPaymentCommand> voidPaymentEndpoint =
+            CommandEndpointBuilder.forCommand(VoidPaymentCommand.class)
+                    .withChannel(BILLING_CHANNEL)
                     .build();
 
     private final CommandEndpoint<AppendToLedgerCommand> appendToLedgerEndpoint =
@@ -160,7 +191,12 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
                     .withChannel(FULFILMENT_CHANNEL)
                     .withReply(OrderFulfilled.class)
                     .withReply(OrderFulfilmentFailed.class)
-                    .withReply(OrderProvisioningFailed.class)
+                    .withReply(OrderProvisioningCancelled.class)
+                    .build();
+
+    private final CommandEndpoint<ReleaseEntitlementCommand> releaseEntitlementEndpoint =
+            CommandEndpointBuilder.forCommand(ReleaseEntitlementCommand.class)
+                    .withChannel(FULFILMENT_CHANNEL)
                     .build();
 
     private final OrderCommandService orderCommandService;
@@ -188,10 +224,17 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
                 .onReply(InventoryAllocationFailed.class, this::handleInventoryAllocationFailed)
                 .withCompensation(this::isBillToMobile, releaseInventoryEndpoint, this::releaseInventory)
             .step()
-                // 4 — PAY_NOW: authorize payment (pre-capture, no comp).
-                .invokeParticipant(this::isPayNow, authorizeBillingEndpoint, this::authorizeBilling)
-                .onReply(BillingAuthorized.class, this::handleBillingAuthorized)
-                .onReply(BillingDeclined.class, this::handleBillingDeclined)
+                // 4 — PAY_NOW: open a payment intent at the provider; the order shows its checkout link.
+                .invokeParticipant(this::isPayNow, createPaymentIntentEndpoint, this::createPaymentIntent)
+                .onReply(PaymentIntentCreated.class, this::handlePaymentIntentCreated)
+                .onReply(PaymentIntentFailed.class, this::handlePaymentIntentFailed)
+            .step()
+                // 4b — PAY_NOW: wait for the subscriber to pay (billing defers its reply until the provider's
+                //      webhook). Comp: void the authorisation if anything later rolls back.
+                .invokeParticipant(this::isPayNow, awaitPaymentEndpoint, this::awaitPayment)
+                .onReply(PaymentAuthorized.class, this::handlePaymentAuthorized)
+                .onReply(PaymentNotCompleted.class, this::handlePaymentNotCompleted)
+                .withCompensation(this::isPayNow, voidPaymentEndpoint, this::voidPayment)
             .step()
                 // 5 — PAY_NOW: promote the hold RESERVED → ALLOCATED (no comp).
                 .invokeParticipant(this::isPayNow, commitInventoryEndpoint, this::commitInventory)
@@ -202,6 +245,7 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
                 //     cancel here is honoured by rolling back: mark CANCELLED then
                 //     throw so Eventuate compensates the holds above. Nothing charged.
                 .invokeLocal(this::prePivotCancelCheckpoint)
+                .onExceptionRollback(SagaRollback.class)
             .step()
                 // 7 — PAY_NOW PIVOT: capture the payment. A hard decline replies
                 //     withFailure → the pivot did not commit → roll back to FAILED.
@@ -216,10 +260,12 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
             .step()
                 // 9 — confirm (local, both); intermediate state, no artifact yet.
                 .invokeLocal(this::confirmOrder)
+                .onExceptionRollback(SagaRollback.class)
             .step()
                 // 10 — pre-fulfil cancel checkpoint (local, both). Post-pivot, so a
                 //      pending cancel forward-recovers (no rollback): flip the branch.
                 .invokeLocal(this::preFulfilCancelCheckpoint)
+                .onExceptionRollback(SagaRollback.class)
             .step()
                 // 11 — fulfil (both); forward-only. Skipped if already forward-recovering.
                 //      A non-transient failure is a success-outcome branch reply that
@@ -227,7 +273,11 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
                 .invokeParticipant(this::shouldFulfil, fulfilOrderEndpoint, this::fulfilOrder)
                 .onReply(OrderFulfilled.class, this::handleOrderFulfilled)
                 .onReply(OrderFulfilmentFailed.class, this::handleOrderFulfilmentFailed)
-                .onReply(OrderProvisioningFailed.class, this::handleOrderProvisioningFailed)
+                .onReply(OrderProvisioningCancelled.class, this::handleProvisioningCancelled)
+            .step()
+                // 11b — DIGITAL_SUBSCRIPTION fulfilled, but the user's cancel won before finalize:
+                //       revoke the entitlement first, then refund like any forward-recovery.
+                .invokeParticipant(this::shouldReleaseEntitlement, releaseEntitlementEndpoint, this::releaseEntitlement)
             .step()
                 // 12 — forward-recovery: refund the captured charge (PAY_NOW).
                 .invokeParticipant(this::shouldRefund, refundBillingEndpoint, this::refundBilling)
@@ -242,6 +292,7 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
                 // 15 — finalize (local, both): COMPLETED on the happy path,
                 //      CANCELLED_REFUNDED when forward-recovery ran.
                 .invokeLocal(this::finalizeOrder)
+                .onExceptionRollback(SagaRollback.class)
             .build();
     }
 
@@ -272,6 +323,10 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
     /** Fulfil only on the happy forward path — skipped once forward-recovering (DD-26). */
     boolean shouldFulfil(PlaceOrderSagaData data) {
         return !data.isForwardRecover();
+    }
+
+    boolean shouldReleaseEntitlement(PlaceOrderSagaData data) {
+        return data.isEntitlementRevokeRequired();
     }
 
     boolean shouldRefund(PlaceOrderSagaData data) {
@@ -352,25 +407,58 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
                 reply.getReason() + ": " + reply.getDetail());
     }
 
-    // ── Step 4: Authorize billing (PAY_NOW) ─────────────────────────────────────
+    // ── Step 4: Create payment intent (PAY_NOW) ─────────────────────────────────
 
-    AuthorizeBillingCommand authorizeBilling(PlaceOrderSagaData data) {
-        log.info("Saga authorize: orderId={}, amount={} {}",
+    CreatePaymentIntentCommand createPaymentIntent(PlaceOrderSagaData data) {
+        log.info("Saga createPaymentIntent: orderId={}, amount={} {}",
                 data.getOrderId(), data.getAmount(), data.getCurrency());
-        return new AuthorizeBillingCommand(data.getOrderId(), data.getSubscriberId(),
-                data.getAmount(), data.getCurrency(), data.getBillingMode());
+        return new CreatePaymentIntentCommand(data.getOrderId(), data.getSubscriberId(),
+                data.getAmount(), data.getCurrency());
     }
 
-    void handleBillingAuthorized(PlaceOrderSagaData data, BillingAuthorized reply) {
-        log.info("Saga authorize OK: orderId={}, authId={}", data.getOrderId(), reply.getAuthId());
+    void handlePaymentIntentCreated(PlaceOrderSagaData data, PaymentIntentCreated reply) {
+        log.info("Saga payment intent OK: orderId={}, intentId={}, expiresAt={}",
+                data.getOrderId(), reply.getIntentId(), reply.getExpiresAt());
+        data.setPaymentIntentId(reply.getIntentId());
+        orderCommandService.awaitPayment(data.getOrderId(), reply.getCheckoutUrl(), reply.getExpiresAt());
+    }
+
+    void handlePaymentIntentFailed(PlaceOrderSagaData data, PaymentIntentFailed reply) {
+        log.warn("Saga payment intent FAILED: orderId={}, reason={}, detail={}",
+                data.getOrderId(), reply.getReason(), reply.getDetail());
+        endBeforePayment(data, "CREATE_PAYMENT_INTENT", reply.getReason(), reply.getDetail());
+    }
+
+    // ── Step 4b: Await payment (PAY_NOW; comp: void) ────────────────────────────
+
+    AwaitPaymentCommand awaitPayment(PlaceOrderSagaData data) {
+        log.info("Saga awaitPayment: orderId={}, intentId={}", data.getOrderId(), data.getPaymentIntentId());
+        return new AwaitPaymentCommand(data.getOrderId(), data.getPaymentIntentId());
+    }
+
+    void handlePaymentAuthorized(PlaceOrderSagaData data, PaymentAuthorized reply) {
+        log.info("Saga payment AUTHORIZED: orderId={}, authId={}", data.getOrderId(), reply.getAuthId());
         data.setAuthId(reply.getAuthId());
     }
 
-    void handleBillingDeclined(PlaceOrderSagaData data, BillingDeclined reply) {
-        log.warn("Saga authorize DECLINED: orderId={}, reason={}, detail={}",
+    void handlePaymentNotCompleted(PlaceOrderSagaData data, PaymentNotCompleted reply) {
+        log.warn("Saga payment NOT completed: orderId={}, reason={}, detail={}",
                 data.getOrderId(), reply.getReason(), reply.getDetail());
-        orderCommandService.failOrder(data.getOrderId(), "AUTHORIZE_BILLING",
-                reply.getReason() + ": " + reply.getDetail());
+        endBeforePayment(data, "AWAIT_PAYMENT", reply.getReason(), reply.getDetail());
+    }
+
+    VoidPaymentCommand voidPayment(PlaceOrderSagaData data) {
+        log.info("Saga void payment (rollback): orderId={}, authId={}", data.getOrderId(), data.getAuthId());
+        return new VoidPaymentCommand(data.getAuthId(), "saga rollback");
+    }
+
+    /** No money was taken: a user cancel ends CANCELLED, anything else FAILED. Eventuate then releases the hold. */
+    private void endBeforePayment(PlaceOrderSagaData data, String step, String reason, String detail) {
+        if ("CANCELLED".equals(reason)) {
+            orderCommandService.cancel(data.getOrderId(), "USER_CANCEL: before payment");
+        } else {
+            orderCommandService.failOrder(data.getOrderId(), step, cap(reason + ": " + detail));
+        }
     }
 
     // ── Step 5: Commit inventory (PAY_NOW) ──────────────────────────────────────
@@ -474,6 +562,17 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
         data.setExternalRef(reply.getExternalRef());
         data.setValidFrom(reply.getValidFrom());
         data.setValidUntil(reply.getValidUntil());
+
+        // Last cancel checkpoint (Design/13 §6): a DIGITAL_SUBSCRIPTION may have waited for OTT long after
+        // step 10, and the user's cancel always wins until COMPLETED. Revoke (step 11b), then refund.
+        if ("DIGITAL_SUBSCRIPTION".equals(data.getProductType())
+                && orderCommandService.isCancelRequested(data.getOrderId())) {
+            log.info("Saga cancel after fulfilment: orderId={} — revoking the entitlement and refunding",
+                    data.getOrderId());
+            data.setForwardRecover(true);
+            data.setEntitlementRevokeRequired(true);
+            data.setCancelReason("USER_CANCEL: during provisioning");
+        }
     }
 
     void handleOrderFulfilmentFailed(PlaceOrderSagaData data, OrderFulfilmentFailed reply) {
@@ -485,15 +584,21 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
         data.setCancelReason(cap("FULFIL_FAILED: " + reply.getReason() + ": " + reply.getDetail()));
     }
 
-    void handleOrderProvisioningFailed(PlaceOrderSagaData data, OrderProvisioningFailed reply) {
-        // OTT provisioning failed (DD-27). Success-outcome reply, so NO compensation
-        // and — unlike forward-recovery — NO refund: the charge stands. Park the
-        // order in FULFILMENT_FAILED at finalize for admin re-drive. Distinct flag so
-        // the refund/reverse/release steps stay skipped (they gate on forwardRecover).
-        log.warn("Saga provisioning FAILED (park → FULFILMENT_FAILED): orderId={}, reason={}, detail={}",
-                data.getOrderId(), reply.getReason(), reply.getDetail());
-        data.setProvisioningFailed(true);
-        data.setProvisioningFailureReason(cap(reply.getReason() + ": " + reply.getDetail()));
+    void handleProvisioningCancelled(PlaceOrderSagaData data, OrderProvisioningCancelled reply) {
+        // Design/13 §6: the user cancelled while fulfilment was waiting for OTT. Success-outcome
+        // reply (post-pivot): forward-recover — refund/reverse + release → CANCELLED_REFUNDED.
+        log.info("Saga provisioning CANCELLED by user (forward-recover): orderId={}, reason={}",
+                data.getOrderId(), reply.getReason());
+        data.setForwardRecover(true);
+        data.setCancelReason(cap(reply.getReason() == null ? "USER_CANCEL" : reply.getReason()));
+    }
+
+    // ── Step 11b: Release a provisioned entitlement after a late cancel ─────────
+
+    ReleaseEntitlementCommand releaseEntitlement(PlaceOrderSagaData data) {
+        log.info("Saga release entitlement (late cancel): orderId={}, externalRef={}",
+                data.getOrderId(), data.getExternalRef());
+        return new ReleaseEntitlementCommand(data.getOrderId(), data.getExternalRef());
     }
 
     /**
@@ -528,13 +633,6 @@ public class PlaceOrderSaga implements SimpleSaga<PlaceOrderSagaData> {
     // ── Step 15: Finalize (local, both) ─────────────────────────────────────────
 
     void finalizeOrder(PlaceOrderSagaData data) {
-        if (data.isProvisioningFailed()) {
-            // DD-27: OTT park — charge stands, no unwind. Branch on reply content,
-            // never complete unconditionally.
-            log.info("Saga finalize → FULFILMENT_FAILED: orderId={}", data.getOrderId());
-            orderCommandService.fulfilmentFailed(data.getOrderId(), data.getProvisioningFailureReason());
-            return;
-        }
         if (data.isForwardRecover()) {
             log.info("Saga finalize → CANCELLED_REFUNDED: orderId={}", data.getOrderId());
             orderCommandService.cancelRefunded(data.getOrderId(), data.getCancelReason());

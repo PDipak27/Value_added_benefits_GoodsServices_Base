@@ -31,6 +31,7 @@ public class OrderView {
     private Instant       completedAt;
     private long          version;  // aggregate @Version of the last applied event (monotonic per order)
 
+    private Payment       payment;      // PAY_NOW: where to pay while PENDING_PAYMENT (Design/15)
     private Fulfilment    fulfilment;   // set on complete; exactly one ref populated, per productType
 
     private List<TimelineEntry> timeline = new ArrayList<>();
@@ -60,6 +61,24 @@ public class OrderView {
         public String getTrackingRef()   { return trackingRef; }
         public String getActivationKey() { return activationKey; }
         public String getExternalRef()   { return externalRef; }
+    }
+
+    // ── Inner: payment link (PAY_NOW) ─────────────────────────────────────
+
+    /** The provider's checkout page for this order, and when the payment window closes. */
+    public static class Payment {
+        private String  checkoutUrl;
+        private Instant expiresAt;
+
+        public Payment() {}
+
+        public Payment(String checkoutUrl, Instant expiresAt) {
+            this.checkoutUrl = checkoutUrl;
+            this.expiresAt   = expiresAt;
+        }
+
+        public String  getCheckoutUrl() { return checkoutUrl; }
+        public Instant getExpiresAt()   { return expiresAt; }
     }
 
     // ── Inner: timeline entry ─────────────────────────────────────────────
@@ -92,6 +111,7 @@ public class OrderView {
     public Instant           getConfirmedAt()  { return confirmedAt; }
     public Instant           getCompletedAt()  { return completedAt; }
     public long              getVersion()      { return version; }
+    public Payment           getPayment()      { return payment; }
     public Fulfilment        getFulfilment()   { return fulfilment; }
     public List<TimelineEntry> getTimeline()   { return timeline; }
 
@@ -106,6 +126,7 @@ public class OrderView {
     public void setConfirmedAt(Instant confirmedAt)  { this.confirmedAt = confirmedAt; }
     public void setCompletedAt(Instant completedAt)  { this.completedAt = completedAt; }
     public void setVersion(long version)             { this.version = version; }
+    public void setPayment(Payment payment)          { this.payment = payment; }
     public void setFulfilment(Fulfilment fulfilment) { this.fulfilment = fulfilment; }
     public void setTimeline(List<TimelineEntry> t)   { this.timeline = t; }
 
